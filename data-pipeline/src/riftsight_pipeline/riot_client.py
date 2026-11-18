@@ -79,9 +79,13 @@ def parse_limits(header: str | None) -> list[tuple[int, float]] | None:
 
 class RiotClient:
     def __init__(self, api_key: str | None = None, *, timeout: float = 20.0, transport: httpx.AsyncBaseTransport | None = None):
-        key = api_key or os.environ.get("RIOT_API_KEY")
+        key = (api_key or os.environ.get("RIOT_API_KEY") or "").strip().strip("'\"").strip()
+        if key.startswith("RIOT_API_KEY="):
+            key = key.split("=", 1)[1].strip().strip("'\"")
         if not key:
             raise RuntimeError("RIOT_API_KEY ist nicht gesetzt (GitHub-Secret oder lokale Umgebungsvariable).")
+        if not key.startswith("RGAPI-") or len(key) != 42:
+            log.warning("RIOT_API_KEY sieht ungewöhnlich aus (Länge %d, beginnt mit RGAPI-: %s).", len(key), key.startswith("RGAPI-"))
         self._client = httpx.AsyncClient(headers={"X-Riot-Token": key, "User-Agent": "riftsight-pipeline/1.0"},
                                          timeout=timeout, transport=transport)
         self._app: dict[str, SlidingWindowLimiter] = {}
