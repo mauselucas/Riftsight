@@ -1,0 +1,4 @@
+.DS_Store
+antigravity/inbox/
+macOS-App/.build/
+*.pyc

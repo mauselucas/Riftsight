@@ -1,0 +1,30 @@
+[project]
+name = "riftsight-pipeline"
+version = "1.0.0"
+description = "Daily aggregation pipeline for Riftsight (counterpicks, builds, tier list, augments, leaderboard)."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "zstandard>=0.22",
+]
+
+[project.optional-dependencies]
+r2 = ["boto3>=1.34"]
+
+[dependency-groups]
+dev = ["pytest>=8.2"]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riftsight_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[project.scripts]
+riftsight = "riftsight_pipeline.cli:main"
