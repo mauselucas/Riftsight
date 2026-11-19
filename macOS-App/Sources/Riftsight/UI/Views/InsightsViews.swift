@@ -212,8 +212,7 @@ struct MatchupsView: View {
                 if app.staticData.usingSampleData { SampleDataBadge() }
             }
             HStack(spacing: 10) {
-                DropdownChip(label: "Champion", options: app.gameData.sortedChampions.map { ($0.id, $0.name) },
-                             selection: Binding(get: { me }, set: { champion = $0; enemy = 0 }))
+                ChampionSearchField(selection: Binding(get: { me }, set: { champion = $0; enemy = 0 }))
                 RoleFilter(selection: Binding(get: { role }, set: { role = $0 ?? .middle; enemy = 0 }))
                 Spacer()
                 if let block = app.staticData.counterpicks?.block(championId: me, role: lane) {
@@ -221,6 +220,7 @@ struct MatchupsView: View {
                         .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 }
             }
+            .zIndex(10)
             if counters.isEmpty {
                 EmptyStateView(icon: "figure.fencing", title: "Keine Matchup-Daten",
                                message: "Für \(app.gameData.championName(me)) auf \(lane.displayName) gibt es in diesem Patch zu wenige Spiele.")
@@ -238,15 +238,12 @@ struct MatchupsView: View {
                 }
             }
         }
-        .task(id: "\(me)-\(selectedEnemyKey)") {
+        .task(id: "\(me)-\(lane.rawValue)-\(selectedEnemy)") {
             _ = await app.gameData.detail(me)
-            let target = enemy == 0 ? app.staticData.counters(of: me, role: role ?? .middle).first?.championId ?? 0 : enemy
-            if target > 0 { _ = await app.gameData.detail(target) }
+            if selectedEnemy > 0 { _ = await app.gameData.detail(selectedEnemy) }
             guideReady += 1
         }
     }
-
-    private var selectedEnemyKey: Int { enemy }
 
     private var defaultChampion: Int {
         if let played = app.matches.compactMap({ $0.local }).first(where: { $0.role == (role ?? .middle) })?.championId { return played }

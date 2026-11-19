@@ -128,6 +128,31 @@ struct ParsingTests {
         #expect(CSBenchmark.minionsAvailable(at: 30) == 0)
         #expect(CSBenchmark.minionsAvailable(at: 10 * 60) > 100)
     }
+
+    @Test func `champ select handles uint64 max spell ids`() throws {
+        let json = """
+        {
+          "localPlayerCellId": 1,
+          "myTeam": [{"cellId": 1, "championId": 901, "spell1Id": 4, "spell2Id": 18446744073709551615}],
+          "theirTeam": [{"cellId": 6, "championId": 51, "spell1Id": 18446744073709551615, "spell2Id": 18446744073709551615}],
+          "actions": []
+        }
+        """
+        let session = try JSONDecoder().decode(ChampSelectSession.self, from: Data(json.utf8))
+        #expect(session.myTeam.first?.championId == 901)
+        #expect(session.myTeam.first?.spell1Id == 4)
+        #expect(session.myTeam.first?.spell2Id == nil)
+        #expect(session.theirTeam.first?.spell1Id == nil)
+    }
+
+    @Test func `live event decodes stolen as bool or string`() throws {
+        let boolJson = #"{"EventID":1,"EventName":"DragonKill","EventTime":320.5,"Stolen":true}"#
+        let stringJson = #"{"EventID":2,"EventName":"BaronKill","EventTime":1250.0,"Stolen":"False"}"#
+        let e1 = try JSONDecoder().decode(LiveEvent.self, from: Data(boolJson.utf8))
+        let e2 = try JSONDecoder().decode(LiveEvent.self, from: Data(stringJson.utf8))
+        #expect(e1.wasStolen == true)
+        #expect(e2.wasStolen == false)
+    }
 }
 
 @Suite("Post game")

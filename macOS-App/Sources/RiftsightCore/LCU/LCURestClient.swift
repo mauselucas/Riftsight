@@ -49,6 +49,15 @@ public enum LocalSession {
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config, delegate: LocalhostTrustDelegate(), delegateQueue: nil)
     }()
+
+    /// Dedicated long-lived session for LCU WebSockets (no 15 s resource timeout).
+    public static let webSocket: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 0
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config, delegate: LocalhostTrustDelegate(), delegateQueue: nil)
+    }()
 }
 
 public enum LCUError: Error, LocalizedError, Sendable {
@@ -160,19 +169,19 @@ public struct LCURestClient: Sendable {
 
     // MARK: Match history
 
-    public func matchHistory(puuid: String? = nil, count: Int = 20) async throws -> [MatchRecord] {
+    public func matchHistory(puuid: String? = nil, count: Int = 20, localPuuid: String? = nil) async throws -> [MatchRecord] {
         let who = puuid ?? "current-summoner"
         let path = puuid == nil
             ? "/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex=\(count - 1)"
             : "/lol-match-history/v1/products/lol/\(who)/matches?begIndex=0&endIndex=\(count - 1)"
         let object = try await getObject(path)
-        return LCUMatchParser.matches(fromHistory: object)
+        return LCUMatchParser.matches(fromHistory: object, localPuuid: localPuuid ?? puuid)
     }
 
-    public func game(_ gameId: Int64) async throws -> MatchRecord? {
+    public func game(_ gameId: Int64, localPuuid: String? = nil) async throws -> MatchRecord? {
         let object = try await getObject("/lol-match-history/v1/games/\(gameId)")
         guard let dict = object as? [String: Any] else { return nil }
-        return LCUMatchParser.match(fromGame: dict, localPuuid: nil)
+        return LCUMatchParser.match(fromGame: dict, localPuuid: localPuuid)
     }
 
     public func timeline(_ gameId: Int64) async throws -> [Int: ParticipantTimeline] {

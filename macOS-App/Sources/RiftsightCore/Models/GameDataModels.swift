@@ -9,7 +9,8 @@ public struct ChampionSummary: Codable, Sendable, Hashable, Identifiable {
     public let squarePortraitPath: String?
     public let roles: [String]?
 
-    public var isPlayable: Bool { id > 0 }
+    /// Excludes placeholders (-1) and mode variants such as the 60xxx "Jade_" copies.
+    public var isPlayable: Bool { id > 0 && id < 10_000 }
     public var classTags: Set<String> { Set(roles ?? []) }
 }
 

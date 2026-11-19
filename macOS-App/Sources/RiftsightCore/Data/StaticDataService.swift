@@ -15,6 +15,10 @@ public final class StaticDataService {
     public private(set) var proSpectate: ProSpectateFile?
     public private(set) var leaderboard: LeaderboardFile?
     public private(set) var lastLoaded: Date?
+    /// True when the configured `baseURL` answered without falling back to local sample files.
+    public private(set) var serverReachable = false
+    /// True when at least one file failed from `baseURL` and fell back to local bundled sample data.
+    public private(set) var lastLoadUsedFallback = false
 
     private let fetcher: JSONFetcher
 
@@ -43,34 +47,42 @@ public final class StaticDataService {
         async let a = file(AugmentsFile.self, "aram_augments.json")
         async let p = file(ProSpectateFile.self, "pro_spectate.json")
         async let l = file(LeaderboardFile.self, "leaderboard.json")
-        counterpicks = await c
-        matchupRunes = await m
-        itemStats = await i
-        tierlist = await t
-        augments = await a
-        proSpectate = await p
-        leaderboard = await l
+        let (rc, rm, ri, rt, ra, rp, rl) = await (c, m, i, t, a, p, l)
+        counterpicks = rc.value
+        matchupRunes = rm.value
+        itemStats = ri.value
+        tierlist = rt.value
+        augments = ra.value
+        proSpectate = rp.value
+        leaderboard = rl.value
+        let results = [rc.fromServer, rm.fromServer, ri.fromServer, rt.fromServer, ra.fromServer, rp.fromServer, rl.fromServer]
+        serverReachable = baseURL != nil && results.contains(true)
+        lastLoadUsedFallback = baseURL != nil && results.contains(false)
         lastLoaded = .now
-        DebugLog.shared.add("data", "Pipeline-Daten geladen (\(usingSampleData ? "Beispieldaten" : "live"), Patch \(dataPatch ?? "?"))")
+        let sourceLabel = serverReachable
+            ? (usingSampleData ? "Server / Sample-Modus" : "live")
+            : "Beispieldaten"
+        DebugLog.shared.add("data", "Pipeline-Daten geladen (\(sourceLabel), Patch \(dataPatch ?? "?"))")
     }
 
-    private func file<T: Decodable & Sendable>(_ type: T.Type, _ name: String) async -> T? {
+    private func file<T: Decodable & Sendable>(_ type: T.Type, _ name: String) async -> (value: T?, fromServer: Bool) {
         if let base = baseURL {
             do {
-                return try await fetcher.decode(type, from: base.appendingPathComponent(name),
-                                                cacheKey: "pipeline/\(name)", policy: .networkFirst)
+                let decoded = try await fetcher.decode(type, from: base.appendingPathComponent(name),
+                                                       cacheKey: "pipeline/\(name)", policy: .networkFirst)
+                return (decoded, true)
             } catch {
                 DebugLog.shared.add("data", "\(name) vom Server fehlgeschlagen: \(error.localizedDescription)", error: true)
             }
         }
         guard let dir = AppPaths.sampleData, let data = try? Data(contentsOf: dir.appendingPathComponent(name)) else {
-            return nil
+            return (nil, false)
         }
         do {
-            return try await JSONFetcher.decodeOffMain(type, data: data)
+            return (try await JSONFetcher.decodeOffMain(type, data: data), false)
         } catch {
             DebugLog.shared.add("data", "Beispieldatei \(name) ungültig: \(error)", error: true)
-            return nil
+            return (nil, false)
         }
     }
 
@@ -91,9 +103,21 @@ public final class StaticDataService {
         return entries.max { $0.games < $1.games }
     }
 
+    /// Below this many games a build recommendation is too noisy to act on.
+    public static let minReliableBuildGames = 40
+    /// Matchup-specific blocks need at least this many games before they override the default build.
+    public static let minMatchupBuildGames = 30
+
     public func build(championId: Int, role: Role, vs enemy: Int? = nil) -> BuildBlock? {
-        matchupRunes?.builds(championId: championId, role: role)?.build(vs: enemy)
+        guard let builds = matchupRunes?.builds(championId: championId, role: role) else { return nil }
+        guard let enemy, let specific = builds.vs?[String(enemy)], specific.games >= Self.minMatchupBuildGames else {
+            return builds.defaultBuild
+        }
+        return builds.defaultBuild.merged(with: specific)
     }
+
+    /// True when the build rests on enough games to be shown as a recommendation.
+    public func isReliable(_ build: BuildBlock?) -> Bool { (build?.games ?? 0) >= Self.minReliableBuildGames }
 
     public func counters(of championId: Int, role: Role) -> [CounterEntry] {
         counterpicks?.block(championId: championId, role: role)?.counters ?? []

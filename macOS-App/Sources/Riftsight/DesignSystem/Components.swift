@@ -436,3 +436,86 @@ extension Date {
         }
     }
 }
+
+/// Search-as-you-type champion picker: shows the current champion, typing a few letters lists matches with icons.
+/// ↑/↓ move, ⏎ picks the highlighted entry, Esc cancels.
+struct ChampionSearchField: View {
+    @Environment(AppModel.self) private var app
+    @Binding var selection: Int
+    var placeholder = "Champion suchen …"
+    @ViewState private var query = ""
+    @ViewState private var highlighted = 0
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let results = Array(app.gameData.searchChampions(query).prefix(8))
+        HStack(spacing: 8) {
+            if query.isEmpty && selection > 0 {
+                ChampionIcon(id: selection, size: 20, radius: 5)
+            } else {
+                Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textTertiary)
+            }
+            TextField("", text: $query,
+                      prompt: Text(selection > 0 ? app.gameData.championName(selection) : placeholder)
+                          .foregroundStyle(selection > 0 ? Theme.text : Theme.textTertiary))
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .onSubmit { if let hit = highlighted < results.count ? results[highlighted] : results.first { pick(hit.id) } }
+                .onKeyPress(.downArrow) { highlighted = min(highlighted + 1, max(0, results.count - 1)); return .handled }
+                .onKeyPress(.upArrow) { highlighted = max(highlighted - 1, 0); return .handled }
+                .onKeyPress(.escape) { query = ""; focused = false; return .handled }
+                .onChange(of: query) { highlighted = 0 }
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .font(.system(size: 12.5, weight: .medium))
+        .padding(.horizontal, 10)
+        .frame(width: 230, height: 32)
+        .background(Theme.field, in: .rect(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(focused ? Theme.accent.opacity(0.7) : Theme.border))
+        .contentShape(.rect)
+        .onTapGesture { focused = true }
+        .overlay(alignment: .topLeading) {
+            if !query.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    if results.isEmpty {
+                        Text("Kein Champion gefunden").font(.system(size: 12)).foregroundStyle(Theme.textTertiary).padding(10)
+                    }
+                    ForEach(Array(results.enumerated()), id: \.element.id) { index, champion in
+                        Button { pick(champion.id) } label: {
+                            HStack(spacing: 9) {
+                                ChampionIcon(id: champion.id, size: 26, radius: 6)
+                                Text(champion.name).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.text)
+                                Spacer()
+                                if champion.id == selection {
+                                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.accent)
+                                }
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(index == highlighted ? Theme.hover : .clear, in: .rect(cornerRadius: 6))
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { if $0 { highlighted = index } }
+                    }
+                }
+                .padding(5)
+                .frame(width: 230, alignment: .leading)
+                .background(Theme.cardRaised, in: .rect(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.border))
+                .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
+                .offset(y: 38)
+            }
+        }
+    }
+
+    private func pick(_ id: Int) {
+        selection = id
+        query = ""
+        focused = false
+    }
+}

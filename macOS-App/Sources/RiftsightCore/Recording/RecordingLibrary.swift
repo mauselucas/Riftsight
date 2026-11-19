@@ -86,8 +86,19 @@ public final class RecordingLibrary {
             await Self.writeThumbnail(for: output)
             DebugLog.shared.add("recording", "Gespeichert: \(output.lastPathComponent)")
             reload()
+            enforceQuota()
         } catch {
             DebugLog.shared.add("recording", "Export fehlgeschlagen: \(error.localizedDescription)", error: true)
+        }
+    }
+
+    /// Removes oldest non-favorite recordings when total size exceeds `storageQuotaGB`.
+    public func enforceQuota() {
+        let limit = Int64(max(1, storageQuotaGB) * 1_073_741_824)
+        guard usedBytes > limit else { return }
+        let candidates = items.filter { !$0.metadata.favorite }.sorted { $0.metadata.createdAt < $1.metadata.createdAt }
+        for item in candidates where usedBytes > limit {
+            delete(item)
         }
     }
 

@@ -134,10 +134,23 @@ public final class CommunityDragonService {
 
     public func classTags(_ championId: Int) -> Set<String> { champions[championId]?.classTags ?? [] }
 
-    /// Searches champions by German name or alias prefix.
+    /// Searches champions by German name or alias, ignoring case, accents, spaces and apostrophes
+    /// ("kaisa" → Kai'Sa, "fate" → Twisted Fate). Prefix matches come first.
     public func searchChampions(_ query: String) -> [ChampionSummary] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = Self.searchKey(query)
         guard !q.isEmpty else { return [] }
-        return sortedChampions.filter { $0.name.lowercased().contains(q) || $0.alias.lowercased().hasPrefix(q) }
+        var prefix: [ChampionSummary] = [], word: [ChampionSummary] = [], other: [ChampionSummary] = []
+        for champion in sortedChampions {
+            let name = Self.searchKey(champion.name)
+            if name.hasPrefix(q) || Self.searchKey(champion.alias).hasPrefix(q) { prefix.append(champion) }
+            else if champion.name.split(whereSeparator: { $0 == " " || $0 == "'" || $0 == "." })
+                        .contains(where: { Self.searchKey(String($0)).hasPrefix(q) }) { word.append(champion) }
+            else if name.contains(q) { other.append(champion) }
+        }
+        return prefix + word + other
+    }
+
+    nonisolated static func searchKey(_ text: String) -> String {
+        String(text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil).filter { $0.isLetter || $0.isNumber })
     }
 }

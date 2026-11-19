@@ -21,11 +21,10 @@ public enum LCUWebSocketClient {
     }
 
     public static func events(credentials: LCUCredentials, paths: [String],
-                              session: URLSession = LocalSession.shared) -> AsyncThrowingStream<LCUEvent, Error> {
+                              session: URLSession = LocalSession.webSocket) -> AsyncThrowingStream<LCUEvent, Error> {
         AsyncThrowingStream { continuation in
             var request = URLRequest(url: credentials.webSocketURL)
             request.setValue(credentials.authorization, forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 10
             let task = session.webSocketTask(with: request)
             task.maximumMessageSize = 64 * 1024 * 1024
             task.resume()

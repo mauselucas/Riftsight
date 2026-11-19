@@ -33,10 +33,10 @@ public enum LCUMatchParser {
 
     // MARK: Match history
 
-    public static func matches(fromHistory object: Any) -> [MatchRecord] {
+    public static func matches(fromHistory object: Any, localPuuid: String? = nil) -> [MatchRecord] {
         guard let root = object as? [String: Any],
               let games = (root["games"] as? [String: Any])?["games"] as? [[String: Any]] else { return [] }
-        return games.compactMap { match(fromGame: $0, localPuuid: nil) }.sorted { $0.creation > $1.creation }
+        return games.compactMap { match(fromGame: $0, localPuuid: localPuuid) }.sorted { $0.creation > $1.creation }
     }
 
     public static func match(fromGame game: [String: Any], localPuuid: String?) -> MatchRecord? {

@@ -36,7 +36,7 @@ class AugmentAccumulator:
                     s[1] += win
                     s[2] += placement
             legendaries = [i for i in p["items"][:6] if is_legendary(i, self.items)]
-            self.builds[(mode, p["champ"])].add({**p, "win": bool(win)}, None, legendaries, "ALL", self.items, True)
+            self.builds[(mode, p["champ"])].add({**p, "win": bool(win)}, None, legendaries, "ALL", self.items, True, inventory_core=True)
 
     def _stat(self, mode: str, aug_id: int, g: int, w: int, psum: int, prior: float) -> dict[str, Any]:
         stat = {"id": aug_id, "rarity": self.rarity.get(aug_id, "silver"), "winrate": rnd(smoothed(w, g, prior, 40)),

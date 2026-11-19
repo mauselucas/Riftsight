@@ -10,7 +10,8 @@ final class OverlayPanel: NSPanel {
                    styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
                    backing: .buffered, defer: false)
         isFloatingPanel = true
-        level = .screenSaver
+        // Above borderless game windows; still below the system's shielding level.
+        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         backgroundColor = .clear
         isOpaque = false
@@ -23,6 +24,12 @@ final class OverlayPanel: NSPanel {
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+}
+
+/// Hosting view that reacts to the very first click although the panel never becomes key
+/// (otherwise buttons like the X need two clicks while League has focus).
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 /// Creates one panel per widget, shows/hides them with the game, Tab key and interact mode,
@@ -42,6 +49,10 @@ final class OverlayWindowManager {
     @ObservationIgnored private var hotKeys: [EventHotKeyRef?] = []
     @ObservationIgnored private var previewModel: LiveOverlayModel?
     @ObservationIgnored private var moveObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var lastTargetScreenFrame: CGRect?
+    @ObservationIgnored private var dragStart: (mouse: CGPoint, origin: CGPoint)?
+    @ObservationIgnored private var frontTick = 0
+    @ObservationIgnored private var accessoryForGame = false
     private unowned let app: AppModel
 
     init(app: AppModel) {
@@ -86,20 +97,68 @@ final class OverlayWindowManager {
     func refresh() {
         let inGame = app.overlay.isInGame || previewOnScreen
         let model = activeModel
+        if inGame {
+            let targetFrame = targetScreenFrame()
+            if lastTargetScreenFrame != targetFrame {
+                lastTargetScreenFrame = targetFrame
+                repositionDefaultPanels(on: targetFrame)
+            }
+        } else {
+            lastTargetScreenFrame = nil
+        }
+        updateActivationPolicy(inGame: inGame && !previewOnScreen)
+        // Re-assert z-order about once a second: borderless games can raise their window above ours.
+        frontTick += 1
+        let reassert = frontTick % 10 == 0
         for widget in OverlayWidget.allCases {
-            let enabled = app.settings.overlaysEnabled && app.settings.isEnabled(widget)
+            let mode = app.settings.visibility(widget)
+            let enabled = app.settings.overlaysEnabled && mode != .off
             let relevant = isRelevant(widget, model: model)
-            let tabOK = widget.visibility == .always || model.tabHeld || interactMode || previewOnScreen
+            let tabOK = mode == .always || model.tabHeld || interactMode || previewOnScreen
             let visible = inGame && enabled && relevant && tabOK && !hidden
             if visible {
                 let panel = panel(for: widget, model: model)
-                panel.ignoresMouseEvents = !(interactMode || widget.isInteractive)
-                panel.isMovableByWindowBackground = interactMode
-                if !panel.isVisible { panel.orderFrontRegardless() }
+                panel.ignoresMouseEvents = false
+                if !panel.isVisible || reassert { panel.orderFrontRegardless() }
             } else if let panel = panels[widget], panel.isVisible {
                 panel.orderOut(nil)
             }
         }
+    }
+
+    /// While League runs borderless/fullscreen it lives in its own Space. macOS only lets an app's
+    /// panels join another app's fullscreen Space reliably when the app is an accessory (no Dock icon),
+    /// so Riftsight switches to accessory for the duration of such a game and back afterwards.
+    private func updateActivationPolicy(inGame: Bool) {
+        let wantAccessory = inGame && Self.leagueIsBorderless()
+        guard wantAccessory != accessoryForGame else { return }
+        accessoryForGame = wantAccessory
+        NSApp.setActivationPolicy(wantAccessory ? .accessory : .regular)
+    }
+
+    private static func leagueIsBorderless() -> Bool {
+        guard let rect = leagueGameWindowRect(),
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(CGPoint(x: rect.midX, y: rect.midY)) }) else { return false }
+        return rect.width >= screen.frame.width - 2 && rect.height >= screen.frame.height - 40
+    }
+
+    // MARK: Dragging (always available – no hotkey needed)
+
+    func beginDrag(_ widget: OverlayWidget) {
+        guard let panel = panels[widget] else { return }
+        dragStart = (NSEvent.mouseLocation, panel.frame.origin)
+    }
+
+    func drag(_ widget: OverlayWidget) {
+        guard let panel = panels[widget], let start = dragStart else { return }
+        let mouse = NSEvent.mouseLocation
+        panel.setFrameOrigin(CGPoint(x: start.origin.x + mouse.x - start.mouse.x, y: start.origin.y + mouse.y - start.mouse.y))
+    }
+
+    func endDrag(_ widget: OverlayWidget) {
+        dragStart = nil
+        guard let panel = panels[widget] else { return }
+        UserDefaults.standard.set(NSStringFromPoint(panel.frame.origin), forKey: defaultsKey(widget))
     }
 
     private func isRelevant(_ widget: OverlayWidget, model: LiveOverlayModel) -> Bool {
@@ -116,13 +175,13 @@ final class OverlayWindowManager {
 
     private func panel(for widget: OverlayWidget, model: LiveOverlayModel) -> OverlayPanel {
         if let existing = panels[widget] {
-            if let host = existing.contentView as? NSHostingView<OverlayWidgetHost>, host.rootView.model !== model {
+            if let host = existing.contentView as? FirstMouseHostingView<OverlayWidgetHost>, host.rootView.model !== model {
                 host.rootView = OverlayWidgetHost(widget: widget, model: model, manager: self, app: app)
             }
             return existing
         }
         let panel = OverlayPanel(size: widget.defaultSize)
-        let host = NSHostingView(rootView: OverlayWidgetHost(widget: widget, model: model, manager: self, app: app))
+        let host = FirstMouseHostingView(rootView: OverlayWidgetHost(widget: widget, model: model, manager: self, app: app))
         host.sizingOptions = [.preferredContentSize]
         panel.contentView = host
         panel.setFrameOrigin(savedOrigin(for: widget, size: widget.defaultSize))
@@ -141,17 +200,91 @@ final class OverlayWindowManager {
 
     private func defaultsKey(_ widget: OverlayWidget) -> String { "overlay.position.\(modeKey).\(widget.rawValue)" }
 
+    /// Finds the screen currently hosting the League of Legends game window (never the League Client),
+    /// falling back to the primary display rather than whichever screen holds the Riftsight window.
+    private func targetScreenFrame() -> CGRect {
+        // Anchor to the game window itself (correct in windowed mode), else its screen.
+        if !previewOnScreen, let window = Self.leagueGameWindowRect() {
+            return window
+        }
+        if previewOnScreen, let main = NSScreen.main {
+            return main.visibleFrame
+        }
+        return NSScreen.screens.first?.frame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
+    /// Frame of the League game window in AppKit coordinates (title bar excluded in windowed mode).
+    private static func leagueGameWindowRect() -> CGRect? {
+        guard let screen = leagueGameScreen(), let rect = lastGameRect else { return nil }
+        // Windowed mode: skip the ~28 pt macOS title bar.
+        if rect.height < screen.frame.height - 40 {
+            return CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: max(0, rect.height - 28))
+        }
+        return rect
+    }
+
+    nonisolated(unsafe) private static var lastGameRect: CGRect?
+
+    private static func leagueGameScreen() -> NSScreen? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        var bestWindowRect: CGRect?
+        var bestArea: CGFloat = 0
+
+        for info in list {
+            let owner = (info[kCGWindowOwnerName as String] as? String) ?? ""
+            let name = (info[kCGWindowName as String] as? String) ?? ""
+            let isLeagueGame = (owner.contains("League of Legends") || name.contains("League of Legends (TM) Client"))
+                && !owner.contains("Client")
+            guard isLeagueGame,
+                  let boundsDict = info[kCGWindowBounds as String] as? [String: Any],
+                  let cgRect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  cgRect.width >= 600, cgRect.height >= 400 else { continue }
+            let area = cgRect.width * cgRect.height
+            if area > bestArea {
+                bestArea = area
+                // Convert Quartz top-left coordinates into AppKit bottom-left coordinates.
+                let appKitY = primaryHeight - cgRect.origin.y - cgRect.height
+                bestWindowRect = CGRect(x: cgRect.origin.x, y: appKitY, width: cgRect.width, height: cgRect.height)
+            }
+        }
+        lastGameRect = bestWindowRect
+        guard let rect = bestWindowRect else { return nil }
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        if let containing = NSScreen.screens.first(where: { $0.frame.contains(center) }) {
+            return containing
+        }
+        return NSScreen.screens.max { a, b in
+            let ia = a.frame.intersection(rect)
+            let ib = b.frame.intersection(rect)
+            return (ia.isNull ? 0 : ia.width * ia.height) < (ib.isNull ? 0 : ib.width * ib.height)
+        }
+    }
+
+    private func repositionDefaultPanels(on screen: CGRect) {
+        for (widget, panel) in panels {
+            guard UserDefaults.standard.string(forKey: defaultsKey(widget)) == nil else { continue }
+            panel.setFrameOrigin(defaultOrigin(for: widget, size: panel.frame.size, on: screen))
+        }
+    }
+
+    private func defaultOrigin(for widget: OverlayWidget, size: CGSize, on screen: CGRect) -> CGPoint {
+        let anchor = widget.defaultAnchor
+        var x = screen.minX + screen.width * anchor.x
+        if anchor.x == 0.5 { x -= size.width / 2 }
+        let y = screen.maxY - screen.height * anchor.y - size.height
+        return CGPoint(x: min(max(screen.minX, x), screen.maxX - size.width),
+                       y: min(max(screen.minY, y), screen.maxY - size.height))
+    }
+
     private func savedOrigin(for widget: OverlayWidget, size: CGSize) -> CGPoint {
         if let stored = UserDefaults.standard.string(forKey: defaultsKey(widget)) {
             let point = NSPointFromString(stored)
             if NSScreen.screens.contains(where: { $0.frame.contains(point) }) { return point }
         }
-        let screen = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let anchor = widget.defaultAnchor
-        var x = screen.minX + screen.width * anchor.x
-        if anchor.x == 0.5 { x -= size.width / 2 }
-        let y = screen.maxY - screen.height * anchor.y - size.height
-        return CGPoint(x: min(max(screen.minX, x), screen.maxX - size.width), y: y)
+        return defaultOrigin(for: widget, size: size, on: targetScreenFrame())
     }
 
     private func savePosition(_ origin: CGPoint, for widget: OverlayWidget) {

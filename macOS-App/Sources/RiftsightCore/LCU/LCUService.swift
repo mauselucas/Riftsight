@@ -21,11 +21,15 @@ public final class LCUService {
     public private(set) var lastEndOfGame: MatchRecord?
 
     public var onPhaseChange: ((GameflowPhase, GameflowPhase) -> Void)?
+    public var onGameflowSession: ((GameflowSession) -> Void)?
     public var onEndOfGame: ((MatchRecord) -> Void)?
+    public var onConnected: (() -> Void)?
 
     public let accounts: LinkedAccountsStore
     private let monitor = LockfileMonitor()
     private var listenTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
+    private var lastChampSelectEventAt: Date = .distantPast
     private var ladderBeforeGame: Int?
 
     public init(accounts: LinkedAccountsStore) {
@@ -42,11 +46,14 @@ public final class LCUService {
     private func credentialsChanged(_ creds: LCUCredentials?) {
         listenTask?.cancel()
         listenTask = nil
+        pollTask?.cancel()
+        pollTask = nil
         guard let creds else {
             state = .disconnected
             client = nil
             phase = .none
             champSelect = nil
+            gameflowSession = nil
             return
         }
         let client = LCURestClient(credentials: creds)
@@ -68,38 +75,96 @@ public final class LCUService {
         guard summoner != nil else { state = .disconnected; return }
         state = .connected
         await refreshAll(client: client)
+        onConnected?()
+        startFallbackPoller(client: client)
 
+        var firstConnect = true
         while !Task.isCancelled {
+            if !firstConnect {
+                await syncActiveState(client: client)
+            }
+            firstConnect = false
             do {
-                let paths = ["/lol-gameflow/v1/gameflow-phase", "/lol-champ-select/v1/session",
-                             "/lol-end-of-game/v1/eog-stats-block", "/lol-ranked/v1/current-ranked-stats",
-                             "/lol-summoner/v1/current-summoner"]
+                let paths = ["/lol-gameflow/v1/gameflow-phase", "/lol-gameflow/v1/session",
+                             "/lol-champ-select/v1/session", "/lol-end-of-game/v1/eog-stats-block",
+                             "/lol-ranked/v1/current-ranked-stats", "/lol-summoner/v1/current-summoner"]
                 for try await event in LCUWebSocketClient.events(credentials: client.credentials, paths: paths) {
                     await handle(event, client: client)
                 }
             } catch {
-                DebugLog.shared.add("lcu", "WebSocket getrennt: \(error.localizedDescription)", error: true)
+                if !Task.isCancelled {
+                    DebugLog.shared.add("lcu", "WebSocket getrennt: \(error.localizedDescription)", error: true)
+                }
             }
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    /// Lightweight REST safety net so Champ Select and gameflow transitions never freeze if WAMP drops events.
+    private func startFallbackPoller(client: LCURestClient) {
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let delay: Duration = self.phase == .champSelect ? .milliseconds(1200) : .seconds(2.5)
+                try? await Task.sleep(for: delay)
+                if Task.isCancelled { return }
+                if let currentPhase = try? await client.gameflowPhase() {
+                    self.setPhase(currentPhase)
+                }
+                if self.phase == .champSelect, Date().timeIntervalSince(self.lastChampSelectEventAt) >= 1.2 {
+                    if let session = try? await client.champSelectSession() {
+                        self.champSelect = session
+                        self.lastChampSelect = session
+                    }
+                } else if self.phase.isInGame {
+                    let hasTeams = !(self.gameflowSession?.gameData?.teamOne?.isEmpty ?? true)
+                    if !hasTeams, let session = try? await client.gameflowSession() {
+                        self.applyGameflowSession(session)
+                    }
+                }
+            }
+        }
+    }
+
+    private func syncActiveState(client: LCURestClient) async {
+        if let currentPhase = try? await client.gameflowPhase() {
+            setPhase(currentPhase)
+        }
+        if phase == .champSelect, let session = try? await client.champSelectSession() {
+            champSelect = session
+            lastChampSelect = session
+        }
+        if phase.isInGame, let session = try? await client.gameflowSession() {
+            applyGameflowSession(session)
         }
     }
 
     public func refreshAll(client: LCURestClient? = nil) async {
         guard let client = client ?? self.client else { return }
+        let localPuuid = summoner?.puuid
         async let rankedTask = try? client.currentRankedStats()
         async let regionTask = try? client.region()
         async let phaseTask = try? client.gameflowPhase()
         async let masteryTask = try? client.masteries()
-        async let historyTask = try? client.matchHistory(count: 20)
+        async let historyTask = try? client.matchHistory(count: 20, localPuuid: localPuuid)
         ranked = await rankedTask
         region = await regionTask ?? region
-        setPhase(await phaseTask ?? .none)
+        let fetchedPhase = await phaseTask ?? .none
+        if fetchedPhase == .champSelect {
+            champSelect = try? await client.champSelectSession()
+            lastChampSelect = champSelect ?? lastChampSelect
+        }
+        if fetchedPhase.isInGame {
+            if let session = try? await client.gameflowSession() {
+                applyGameflowSession(session)
+            }
+        }
+        setPhase(fetchedPhase)
         if let list = await masteryTask {
             masteries = Dictionary(list.map { ($0.championId, $0) }, uniquingKeysWith: { a, _ in a })
         }
         if let history = await historyTask { recentMatches = history }
-        if phase == .champSelect { champSelect = try? await client.champSelectSession(); lastChampSelect = champSelect ?? lastChampSelect }
-        if phase.isInGame { gameflowSession = try? await client.gameflowSession() }
         if let summoner { accounts.upsert(summoner: summoner, ranked: ranked, region: region) }
         DebugLog.shared.add("lcu", "Verbunden als \(summoner?.riotName ?? "?") (\(region)), Phase \(phase.rawValue)")
     }
@@ -108,12 +173,25 @@ public final class LCUService {
         switch event.uri {
         case "/lol-gameflow/v1/gameflow-phase":
             if let raw = event.decode(String.self) { setPhase(GameflowPhase(lenient: raw)) }
+        case "/lol-gameflow/v1/session":
+            if event.eventType == "Delete" {
+                gameflowSession = nil
+            } else if let session = event.decode(GameflowSession.self) {
+                applyGameflowSession(session)
+            }
         case "/lol-champ-select/v1/session":
+            lastChampSelectEventAt = .now
             if event.eventType == "Delete" {
                 champSelect = nil
             } else if let session = event.decode(ChampSelectSession.self) {
                 champSelect = session
                 lastChampSelect = session
+            } else if let data = event.data {
+                do {
+                    _ = try JSONDecoder().decode(ChampSelectSession.self, from: data)
+                } catch {
+                    DebugLog.shared.add("lcu", "Champ-Select-Decode fehlgeschlagen: \(error.localizedDescription)", error: true)
+                }
             }
         case "/lol-end-of-game/v1/eog-stats-block":
             if let data = event.data, let object = try? JSONSerialization.jsonObject(with: data),
@@ -129,16 +207,53 @@ public final class LCUService {
         }
     }
 
+    private func applyGameflowSession(_ session: GameflowSession) {
+        gameflowSession = session
+        let teamOne = session.gameData?.teamOne ?? []
+        let teamTwo = session.gameData?.teamTwo ?? []
+        if !teamOne.isEmpty || !teamTwo.isEmpty {
+            onGameflowSession?(session)
+        }
+    }
+
+    private func fetchGameflowSessionWithRetry(client: LCURestClient) {
+        Task { [weak self] in
+            for attempt in 0..<6 {
+                guard let self, self.phase.isInGame else { return }
+                if let session = try? await client.gameflowSession() {
+                    self.applyGameflowSession(session)
+                    let count = (session.gameData?.teamOne?.count ?? 0) + (session.gameData?.teamTwo?.count ?? 0)
+                    if count > 0 { return }
+                }
+                if attempt < 5 { try? await Task.sleep(for: .seconds(1)) }
+            }
+        }
+    }
+
     private func setPhase(_ newPhase: GameflowPhase) {
         guard newPhase != phase else { return }
         let old = phase
         phase = newPhase
         DebugLog.shared.add("lcu", "Phase: \(old.rawValue) → \(newPhase.rawValue)")
-        if newPhase == .champSelect, let solo = ranked?.soloDuo {
-            ladderBeforeGame = ladderPoints(tier: solo.rankTier, division: solo.division, lp: solo.leaguePoints ?? 0)
+        if newPhase == .champSelect {
+            gameflowSession = nil
+            if let solo = ranked?.soloDuo {
+                ladderBeforeGame = ladderPoints(tier: solo.rankTier, division: solo.division, lp: solo.leaguePoints ?? 0)
+            }
+            if let client {
+                Task { [weak self] in
+                    if let session = try? await client.champSelectSession() {
+                        self?.champSelect = session
+                        self?.lastChampSelect = session
+                    }
+                }
+            }
+        }
+        if newPhase != .champSelect {
+            champSelect = nil
         }
         if newPhase.isInGame, let client {
-            Task { self.gameflowSession = try? await client.gameflowSession() }
+            fetchGameflowSessionWithRetry(client: client)
         }
         if newPhase == .endOfGame, lastEndOfGame == nil || old != .endOfGame, let client {
             Task {
@@ -146,7 +261,8 @@ public final class LCUService {
             }
         }
         if (newPhase == .none || newPhase == .lobby) && old == .endOfGame, let client {
-            Task { if let history = try? await client.matchHistory(count: 20) { self.recentMatches = history } }
+            let localPuuid = summoner?.puuid
+            Task { if let history = try? await client.matchHistory(count: 20, localPuuid: localPuuid) { self.recentMatches = history } }
         }
         onPhaseChange?(old, newPhase)
     }
@@ -197,7 +313,7 @@ public final class LCUService {
 
     public func fullGame(_ gameId: Int64) async -> MatchRecord? {
         guard let client else { return nil }
-        return try? await client.game(gameId)
+        return try? await client.game(gameId, localPuuid: summoner?.puuid)
     }
 
     public func timeline(_ gameId: Int64) async -> [Int: ParticipantTimeline] {

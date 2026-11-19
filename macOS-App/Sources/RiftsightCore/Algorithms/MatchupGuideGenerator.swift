@@ -53,54 +53,48 @@ public enum MatchupGuideGenerator {
         let enemyKey = keySpell(enemy)
         let myTrade = tradeSpell(me)
         let enemyUlt = enemy.spell("R")
+        let keyLabel = "\(enemyKey?.key ?? "?") (\(enemyKey?.name ?? "Key-Spell"))"
 
-        // 1) Trading & win condition
-        var trading = "Trade, sobald \(enemy.name) \(enemyKey?.key ?? "?") (\(enemyKey?.name ?? "Key-Spell"), \(cd(enemyKey)) auf Rang 1) verbraucht hat – "
-        trading += "dein \(myTrade?.key ?? "Q") (\(myTrade?.name ?? "Spell")) ist nach \(cd(myTrade)) wieder bereit."
+        // 1) Trading – one clear rule plus range advantage.
+        var trading = "Greif an, wenn sein \(keyLabel) weg ist – \(cd(enemyKey)) Cooldown."
         if let mine = input.myStats?.stats.attackrange, let theirs = input.enemyStats?.stats.attackrange {
             let diff = Int(mine - theirs)
-            if diff >= 100 { trading += " Du hast \(diff) mehr Reichweite: Poke mit Autos, wenn er Minions lasthittet." }
-            else if diff <= -100 { trading += " Er hat \(-diff) mehr Reichweite – nur in kurzen All-ins traden." }
-        }
-        if let delta = input.laneDelta {
-            trading += delta >= 0.015 ? " Statistisch gewinnst du die Lane (\(delta.signedPercentString()))."
-                : delta <= -0.015 ? " Statistisch verlierst du die Lane (\(delta.signedPercentString())) – spiel auf Skalierung."
-                : " Ausgeglichenes Matchup."
+            if diff >= 100 { trading += " Du hast mehr Reichweite: poke ihn beim Farmen." }
+            else if diff <= -100 { trading += " Er hat mehr Reichweite: nur kurze All-ins." }
+            else if let myTrade { trading += " Dein \(myTrade.key) ist nach \(cd(myTrade)) wieder da." }
+        } else if let myTrade {
+            trading += " Dein \(myTrade.key) ist nach \(cd(myTrade)) wieder da."
         }
 
-        // 2) Danger zone
-        var danger = "Respektiere \(enemyKey?.name ?? "seinen Key-Spell") (\(enemyKey?.key ?? "?")): "
-        danger += "\(cd(enemyKey)) Abklingzeit früh, \(cd(enemyKey, rank: 5)) maximiert."
+        // 2) Danger – what to respect.
+        var danger = "Weich seinem \(keyLabel) aus."
         if let ult = enemyUlt {
-            danger += " Ult \(ult.name): \(cd(ult)) / \(cd(ult, rank: 2)) / \(cd(ult, rank: 3)) – ab Level 6 Kill-Gefahr unter ~60 % Leben."
+            danger += " Ab Level 6 (\(ult.name)): unter 60 % Leben nicht nach vorn."
         }
 
-        // 3) Wave management
+        // 3) Wave – one instruction.
         let iAmMelee = !(me.isRanged)
-        let enemyRanged = enemy.isRanged
         let early = (input.myCurve?.early ?? 0.5) - (input.enemyCurve?.early ?? 0.5) + (input.laneDelta ?? 0)
         let wave: String
         if input.role == .jungle {
-            wave = early >= 0 ? "Invade/Contest früh: Du bist in den ersten Clears stärker – spiegeln und Scuttle sichern."
-                : "Gegenüberliegend farmen, Lanes mit Prio unterstützen und \(enemy.name) per Ward tracken."
+            wave = early >= 0 ? "Du bist früh stärker: Scuttle holen und seinen Jungle invaden."
+                : "Er ist früh stärker: auf der anderen Seite farmen und Lanes mit Prio helfen."
         } else if input.role == .utility {
-            wave = early >= 0 ? "Level-2-Spike erzwingen: Erste Welle schnell pushen und auf Engage gehen."
-                : "Welle neutral halten, Bushes kontrollieren und \(enemy.name)s Engage-Cooldowns abwarten."
-        } else if iAmMelee && enemyRanged {
-            wave = "Freeze nah an deinem Turm: \(enemy.name) muss sich für Poke weit nach vorn stellen – dann bestrafen."
+            wave = early >= 0 ? "Erste Welle schnell pushen und auf Level 2 angreifen."
+                : "Welle ruhig halten, Büsche kontrollieren, seinen Engage abwarten."
+        } else if iAmMelee && enemy.isRanged {
+            wave = "Welle nah an deinem Turm halten – er muss für Poke nach vorn kommen."
         } else if early > 0.01 {
-            wave = "Fast-Push & Roam: Wellen schnell clearen, Plates holen und Mid/Jungle-Prio für Drachen nutzen."
+            wave = "Schnell pushen, Plates holen und roamen."
         } else {
-            wave = "Slow-Push vor Level 6 und Reset mit Welle im Turm – kein Freeze-Kampf gegen frühe Stärke."
+            wave = "Vor Level 6 langsam pushen und mit der Welle im Turm zurückgehen."
         }
 
-        // 4) Power spikes
-        var spikes = "Deine Spikes: Level 2/3 (\(me.spells.prefix(3).map(\.key).joined(separator: "/"))), Level 6 (R)"
-        if let item = input.myCoreItem { spikes += " und erstes Item \(item)" }
-        spikes += ". \(enemy.name)"
-        if let item = input.enemyCoreItem { spikes += " spiket mit \(item)" } else { spikes += " spiket mit Level 6" }
-        if let curve = input.enemyCurve, curve.late > curve.early + 0.02 { spikes += " und skaliert stärker ins Late Game – beende früh." }
-        else { spikes += "." }
+        // 4) Power spikes – who is strong when.
+        var spikes = "Du: Level 6" + (input.myCoreItem.map { " + \($0)" } ?? "") + "."
+        spikes += " Er: " + (input.enemyCoreItem ?? "Level 6") + "."
+        if let curve = input.enemyCurve, curve.late > curve.early + 0.02 { spikes += " Er skaliert besser – spiel aufs frühe Spiel." }
+        else if let delta = input.laneDelta, delta <= -0.015 { spikes += " Lane ist schwer – sicher farmen, später gewinnen." }
 
         let difficulty: String
         switch input.laneDelta ?? 0 {
@@ -113,10 +107,10 @@ public enum MatchupGuideGenerator {
 
         return MatchupGuide(myChampionId: me.id, enemyChampionId: enemy.id, role: input.role, patch: input.patch,
                             difficulty: difficulty, points: [
-                                .init(title: "Trading & Win-Condition", text: trading),
-                                .init(title: "Gefahrenzone / Key-Spell", text: danger),
-                                .init(title: "Wave-Management", text: wave),
-                                .init(title: "Power-Spikes", text: spikes),
+                                .init(title: "Traden", text: trading),
+                                .init(title: "Aufpassen", text: danger),
+                                .init(title: "Welle", text: wave),
+                                .init(title: "Stark wann", text: spikes),
                             ])
     }
 }

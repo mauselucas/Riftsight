@@ -60,6 +60,21 @@ public struct LiveActivePlayer: Codable, Sendable {
     public let summonerName: String?
 
     public var displayName: String { riotId ?? summonerName ?? riotIdGameName ?? "" }
+
+    enum CodingKeys: String, CodingKey {
+        case abilities, championStats, currentGold, level, riotId, riotIdGameName, summonerName
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        abilities = try? c.decodeIfPresent(Abilities.self, forKey: .abilities)
+        championStats = try? c.decodeIfPresent(ChampionStats.self, forKey: .championStats)
+        currentGold = (try? c.decodeIfPresent(Double.self, forKey: .currentGold)) ?? 0
+        level = (try? c.decodeIfPresent(Int.self, forKey: .level)) ?? 1
+        riotId = try? c.decodeIfPresent(String.self, forKey: .riotId)
+        riotIdGameName = try? c.decodeIfPresent(String.self, forKey: .riotIdGameName)
+        summonerName = try? c.decodeIfPresent(String.self, forKey: .summonerName)
+    }
 }
 
 public struct LivePlayer: Codable, Sendable, Hashable, Identifiable {
@@ -131,8 +146,12 @@ public struct LivePlayer: Codable, Sendable, Hashable, Identifiable {
 
     public func matches(name: String) -> Bool {
         guard !name.isEmpty else { return false }
-        return riotId == name || summonerName == name || riotIdGameName == name
-            || riotId?.components(separatedBy: "#").first == name.components(separatedBy: "#").first
+        if riotId == name || summonerName == name || riotIdGameName == name { return true }
+        let targetBase = name.components(separatedBy: "#").first?.lowercased() ?? ""
+        guard !targetBase.isEmpty else { return false }
+        let candidates = [riotId, riotIdGameName, summonerName]
+            .compactMap { $0?.components(separatedBy: "#").first?.lowercased() }
+        return candidates.contains(targetBase)
     }
 }
 
@@ -171,6 +190,35 @@ public struct LiveEvent: Codable, Sendable, Hashable, Identifiable {
         self.AcingTeam = AcingTeam
         self.TurretKilled = TurretKilled
         self.InhibKilled = InhibKilled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case EventID, EventName, EventTime, KillerName, VictimName, Assisters, DragonType, Stolen
+        case KillStreak, Acer, AcingTeam, TurretKilled, InhibKilled
+    }
+
+    /// Riot sends `Stolen` as either `"True"`/`"False"` or a JSON boolean `true`/`false` depending on patch/event.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        EventID = try c.decode(Int.self, forKey: .EventID)
+        EventName = try c.decode(String.self, forKey: .EventName)
+        EventTime = try c.decode(Double.self, forKey: .EventTime)
+        KillerName = try? c.decodeIfPresent(String.self, forKey: .KillerName)
+        VictimName = try? c.decodeIfPresent(String.self, forKey: .VictimName)
+        Assisters = try? c.decodeIfPresent([String].self, forKey: .Assisters)
+        DragonType = try? c.decodeIfPresent(String.self, forKey: .DragonType)
+        if let str = try? c.decodeIfPresent(String.self, forKey: .Stolen) {
+            Stolen = str
+        } else if let flag = try? c.decodeIfPresent(Bool.self, forKey: .Stolen) {
+            Stolen = flag ? "True" : "False"
+        } else {
+            Stolen = nil
+        }
+        KillStreak = try? c.decodeIfPresent(Int.self, forKey: .KillStreak)
+        Acer = try? c.decodeIfPresent(String.self, forKey: .Acer)
+        AcingTeam = try? c.decodeIfPresent(String.self, forKey: .AcingTeam)
+        TurretKilled = try? c.decodeIfPresent(String.self, forKey: .TurretKilled)
+        InhibKilled = try? c.decodeIfPresent(String.self, forKey: .InhibKilled)
     }
 
     public var id: Int { EventID }

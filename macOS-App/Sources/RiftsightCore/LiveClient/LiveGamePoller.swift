@@ -19,6 +19,7 @@ public final class LiveGamePoller {
     private var task: Task<Void, Never>?
     private var lastEventId = -1
     private var failures = 0
+    private var loggedDecodeError = false
     static let endpoint = URL(string: "https://127.0.0.1:2999/liveclientdata/allgamedata")!
 
     public init() {}
@@ -47,6 +48,8 @@ public final class LiveGamePoller {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
             let snapshot = try await JSONFetcher.decodeOffMain(LiveAllGameData.self, data: payload)
             failures = 0
+            loggedDecodeError = false
+            lastError = nil
             if !isInGame {
                 isInGame = true
                 lastEventId = -1
@@ -57,6 +60,19 @@ public final class LiveGamePoller {
             if let maxId = fresh.map(\.EventID).max() { lastEventId = maxId }
             onUpdate?(snapshot)
             if !fresh.isEmpty { onNewEvents?(fresh, snapshot) }
+        } catch let err as DecodingError {
+            failures += 1
+            lastError = err.localizedDescription
+            if !loggedDecodeError {
+                loggedDecodeError = true
+                DebugLog.shared.add("live", "Live-API-Decode fehlgeschlagen: \(err.localizedDescription)", error: true)
+            }
+            if isInGame && failures >= 4 {
+                isInGame = false
+                data = nil
+                DebugLog.shared.add("live", "Live-Spiel beendet")
+                onGameEnded?()
+            }
         } catch {
             failures += 1
             if isInGame && failures >= 4 {

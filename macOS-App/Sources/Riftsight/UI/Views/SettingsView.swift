@@ -53,6 +53,7 @@ struct SettingsView: View {
                             }
                         }
                         settingToggle("Ganze Spiele aufnehmen", isOn: $settings.recordGames)
+                            .onChange(of: settings.recordGames) { _, value in app.recorder.recordFullGames = value }
                         settingToggle("Highlights automatisch als Clips speichern (Multikills, Baron, Drache, Ace)", isOn: $settings.autoClips)
                         HStack {
                             Text("Instant Replay (⌃⌥R)").font(.system(size: 12.5))
@@ -61,12 +62,19 @@ struct SettingsView: View {
                                 ForEach([30.0, 60, 90, 120], id: \.self) { Text("\(Int($0)) s").tag($0) }
                             }
                             .labelsHidden().frame(width: 90)
-                            .onChange(of: replaySeconds) { _, value in app.recorder.replaySeconds = value }
+                            .onChange(of: replaySeconds) { _, value in
+                                app.settings.replaySeconds = value
+                                app.recorder.replaySeconds = value
+                            }
                         }
                         HStack {
                             Text("Speicherlimit").font(.system(size: 12.5))
                             Slider(value: $quota, in: 5...200)
-                                .onChange(of: quota) { _, value in app.library.storageQuotaGB = value.rounded() }
+                                .onChange(of: quota) { _, value in
+                                    let rounded = value.rounded()
+                                    app.settings.storageQuotaGB = rounded
+                                    app.library.storageQuotaGB = rounded
+                                }
                             Text("\(Int(quota)) GB").font(.system(size: 12).monospacedDigit()).frame(width: 52, alignment: .trailing)
                         }
                         Button("Aufnahme-Ordner im Finder öffnen") {
@@ -109,8 +117,8 @@ struct SettingsView: View {
         .controlSize(.small)
         .onAppear {
             pipelineDraft = app.settings.pipelineURL
-            replaySeconds = app.recorder.replaySeconds
-            quota = app.library.storageQuotaGB
+            replaySeconds = app.settings.replaySeconds
+            quota = app.settings.storageQuotaGB
         }
     }
 
@@ -125,7 +133,17 @@ struct SettingsView: View {
         Task {
             await app.staticData.load()
             reloading = false
-            app.toast = app.staticData.usingSampleData ? "Pipeline nicht erreichbar – Beispieldaten aktiv" : "Statistiken aktualisiert"
+            if app.staticData.baseURL == nil {
+                app.toast = "Mitgelieferte Beispieldaten aktiv"
+            } else if !app.staticData.serverReachable {
+                app.toast = "Pipeline nicht erreichbar – Beispieldaten aktiv"
+            } else if app.staticData.lastLoadUsedFallback {
+                app.toast = "Pipeline teilweise geladen – fehlende Dateien nutzen Beispieldaten"
+            } else if app.staticData.usingSampleData {
+                app.toast = "Pipeline verbunden (Sample-Modus aktiv)"
+            } else {
+                app.toast = "Statistiken aktualisiert"
+            }
         }
     }
 

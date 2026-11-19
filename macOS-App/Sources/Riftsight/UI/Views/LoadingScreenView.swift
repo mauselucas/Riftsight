@@ -4,6 +4,7 @@ import SwiftUI
 /// Loading-screen scout: both teams with rank, recent form, champion pool and pre-game behaviour badges.
 struct LoadingScreenView: View {
     @Environment(AppModel.self) private var app
+    @ViewState private var guideReady = 0
 
     var body: some View {
         let players = shownPlayers
@@ -23,7 +24,11 @@ struct LoadingScreenView: View {
                     ForEach(players) { ScoutCard(player: $0, accent: $0.teamId == myTeam ? Theme.blueSideBar : Theme.textTertiary) }
                 }
             } else {
-                if let guide = laneGuide(players: players, myTeam: myTeam) {
+                if guideReady >= 0, let me = players.first(where: { $0.puuid == localPuuid }), me.championId > 0 {
+                    let enemies = players.filter { $0.teamId != myTeam }
+                    ItemGuideCard(me: me, laneEnemy: enemies.first { me.role != nil && $0.role == me.role }, enemies: enemies)
+                }
+                if guideReady >= 0, let guide = laneGuide(players: players, myTeam: myTeam) {
                     LaneGuideCard(guide: guide)
                 }
                 HStack(alignment: .top, spacing: 16) {
@@ -32,6 +37,19 @@ struct LoadingScreenView: View {
                                players: sorted(players.filter { $0.teamId != myTeam }))
                 }
             }
+        }
+        .task(id: players.map(\.championId)) {
+            guard let me = players.first(where: { $0.puuid == localPuuid }), me.championId > 0 else { return }
+            _ = await app.gameData.detail(me.championId)
+            let enemy = players.first { $0.teamId != myTeam && me.role != nil && $0.role == me.role }
+                ?? players.first { $0.teamId != myTeam && $0.championId > 0 }
+            if let enemy, enemy.championId > 0 {
+                _ = await app.gameData.detail(enemy.championId)
+                if let guide = app.champSelect.guide(my: me.championId, enemy: enemy.championId, role: me.role ?? .middle) {
+                    app.guides.store(guide)
+                }
+            }
+            guideReady += 1
         }
     }
 
@@ -236,29 +254,165 @@ private struct ChampionPoolStrip: View {
 private struct LaneGuideCard: View {
     @Environment(AppModel.self) private var app
     let guide: MatchupGuide
+    @ViewState private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                ChampionIcon(id: guide.myChampionId, size: 26, radius: 13)
-                Text("vs").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
-                ChampionIcon(id: guide.enemyChampionId, size: 26, radius: 13)
-                Text("Lane-Guide: \(app.gameData.championName(guide.myChampionId)) gegen \(app.gameData.championName(guide.enemyChampionId))")
-                    .font(.system(size: 14, weight: .semibold))
-                Spacer()
-                Pill(text: guide.difficulty, color: Theme.gold)
-                Text("Patch \(guide.patch)").font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
-            }
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 14, alignment: .top), GridItem(.flexible(), spacing: 14, alignment: .top)], alignment: .leading, spacing: 10) {
-                ForEach(guide.points) { point in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(point.title).font(.system(size: 11.5, weight: .bold)).foregroundStyle(Color(hex: 0x9DB0FF))
-                        Text(point.text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+            Button { withAnimation(.snappy(duration: 0.2)) { expanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    ChampionIcon(id: guide.myChampionId, size: 22, radius: 11)
+                    Text("vs").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                    ChampionIcon(id: guide.enemyChampionId, size: 22, radius: 11)
+                    Text("Lane-Guide gegen \(app.gameData.championName(guide.enemyChampionId))")
+                        .font(.system(size: 13.5, weight: .semibold))
+                    Pill(text: guide.difficulty, color: Theme.gold)
+                    Spacer()
+                    if !expanded {
+                        Text("Ingame mit Tab").font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 14, alignment: .top), GridItem(.flexible(), spacing: 14, alignment: .top)],
+                          alignment: .leading, spacing: 10) {
+                    ForEach(guide.points) { point in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(point.title).font(.system(size: 11.5, weight: .bold)).foregroundStyle(Color(hex: 0x9DB0FF))
+                            Text(point.text).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .cardStyle(padding: 14)
+    }
+}
+
+/// Recommended build plus "what to buy when" options for the loading screen.
+private struct ItemGuideCard: View {
+    @Environment(AppModel.self) private var app
+    let me: ScoutPlayer
+    let laneEnemy: ScoutPlayer?
+    let enemies: [ScoutPlayer]
+
+    var body: some View {
+        let role = me.role ?? .middle
+        let model: ChampSelectModel = app.champSelect
+        let build = app.staticData.build(championId: me.championId, role: role, vs: laneEnemy?.championId)
+        let chosen = model.myChampionId == me.championId ? model.selectedArchetype : nil
+        let archetype = build?.archetypes?.first { $0.name == chosen } ?? build?.archetypes?.first
+        let core = archetype?.itemIds ?? build?.coreBuild?.itemIds ?? []
+        let boots = (build?.boots ?? []).first.map { [$0.itemId] } ?? []
+        let threats = model.threats(enemyIds: enemies.map(\.championId))
+        let groups = model.itemGroups(championId: me.championId, role: role, build: build, threats: threats)
+            .filter { $0.kind != .coreSpike }
+            .sorted { $0.isHighlighted && !$1.isHighlighted }
+        let ahead = (build?.completedItems ?? [])
+            .filter { !core.contains($0.itemId) && !boots.contains($0.itemId) && !(app.gameData.item($0.itemId)?.categories.contains("Boots") ?? false) }
+            .sorted { $0.winrate > $1.winrate }
+            .prefix(3).map(\.itemId)
+
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                ChampionIcon(id: me.championId, size: 26, radius: 13)
+                Text("Item-Guide · \(app.gameData.championName(me.championId))").font(.system(size: 14, weight: .semibold))
+                if let archetype { Pill(text: archetype.name, color: Color(hex: 0x9DB0FF)) }
+                Spacer()
+                if let laneEnemy, laneEnemy.championId > 0 {
+                    Text("vs \(app.gameData.championName(laneEnemy.championId))").font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+                }
+            }
+            if build == nil {
+                Text("Für diesen Champion gibt es noch keine Build-Daten.").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+            } else {
+                if !app.staticData.isReliable(build) {
+                    Label("Erst \(build?.games ?? 0) Spiele in den Daten – Empfehlung noch unsicher", systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 11)).foregroundStyle(Theme.gold)
+                }
+                HStack(alignment: .top, spacing: 22) {
+                    step("Start", ids: build?.startingItems?.itemIds ?? [])
+                    step("Kern-Build", ids: core, arrows: true)
+                    if !boots.isEmpty { step("Stiefel", ids: boots) }
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Je nach Spielverlauf").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 10, alignment: .top)], alignment: .leading, spacing: 10) {
+                        if !ahead.isEmpty {
+                            option(symbol: "arrow.up.right", title: "Du liegst vorne", detail: "Mehr Schaden – Vorsprung ausbauen.",
+                                   ids: ahead, highlighted: false)
+                        }
+                        ForEach(groups) { group in
+                            option(symbol: group.kind.symbol, title: condition(group.kind),
+                                   detail: group.trigger ?? hint(group.kind),
+                                   ids: group.items.prefix(3).map(\.itemId), highlighted: group.isHighlighted)
+                        }
+                    }
                 }
             }
         }
         .cardStyle(padding: 16)
+    }
+
+    private func step(_ title: String, ids: [Int], arrows: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
+            HStack(spacing: 5) {
+                ForEach(Array(ids.enumerated()), id: \.offset) { index, id in
+                    if arrows && index > 0 {
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.textTertiary)
+                    }
+                    ItemIcon(id: id, size: 34).help(app.gameData.itemName(id))
+                }
+                if ids.isEmpty { Text("–").foregroundStyle(Theme.textTertiary) }
+            }
+        }
+    }
+
+    private func option(symbol: String, title: String, detail: String, ids: [Int], highlighted: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 10, weight: .bold))
+                Text(title).font(.system(size: 12, weight: .semibold))
+                Spacer(minLength: 0)
+                if highlighted { Text("JETZT WICHTIG").font(.system(size: 8.5, weight: .heavy)) }
+            }
+            .foregroundStyle(highlighted ? Theme.gold : Theme.text)
+            Text(detail).font(.system(size: 10.5)).foregroundStyle(Theme.textTertiary).lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 5) {
+                ForEach(ids, id: \.self) { ItemIcon(id: $0, size: 28).help(app.gameData.itemName($0)) }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(highlighted ? Theme.gold.opacity(0.07) : Theme.cardRaised, in: .rect(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(highlighted ? Theme.gold.opacity(0.4) : Theme.border))
+    }
+
+    private func condition(_ kind: ItemGroupKind) -> String {
+        switch kind {
+        case .coreSpike: "Standard"
+        case .antiHeal: "Gegner heilen viel"
+        case .defensive: "Du stirbst zu schnell"
+        case .tankShred: "Gegner sind zu tanky"
+        }
+    }
+
+    private func hint(_ kind: ItemGroupKind) -> String {
+        switch kind {
+        case .coreSpike: ""
+        case .antiHeal: "Ab 2 Heil- oder Schildquellen – früh das billige Bauteil."
+        case .defensive: "Wenn du hinten liegst oder in einer Combo fällst."
+        case .tankShred: "Ab 2 Tanks oder wenn sie Rüstung/MR stapeln."
+        }
     }
 }

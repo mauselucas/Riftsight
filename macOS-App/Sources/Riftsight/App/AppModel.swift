@@ -32,6 +32,9 @@ final class AppModel {
     init() {
         lcu = LCUService(accounts: accounts)
         recorder = ScreenCaptureRecorder(library: library)
+        recorder.replaySeconds = settings.replaySeconds
+        recorder.recordFullGames = settings.recordGames
+        library.storageQuotaGB = settings.storageQuotaGB
         champSelect = ChampSelectModel(app: self)
         overlay = LiveOverlayModel(app: self)
         overlayWindows = OverlayWindowManager(app: self)
@@ -71,6 +74,7 @@ final class AppModel {
 
     func lpHistory(_ puuid: String) -> [LPPoint] {
         let stored = accounts.lpHistory[puuid] ?? []
+        if !showsDemo { return stored }
         return stored.count >= 2 ? stored : DemoData.lpHistory(for: puuid)
     }
 
@@ -111,29 +115,52 @@ final class AppModel {
 
     private func wireEvents() {
         lcu.onPhaseChange = { [weak self] old, new in self?.phaseChanged(from: old, to: new) }
+        lcu.onGameflowSession = { [weak self] session in self?.handleGameflowSession(session) }
+        lcu.onConnected = { [weak self] in
+            guard let self else { return }
+            Task { await self.loadCollection() }
+        }
         lcu.onEndOfGame = { [weak self] match in
             guard let self else { return }
             postGameMatch = match
             if settings.autoNavigate { router.go(.postGame) }
         }
-        live.onUpdate = { [weak self] data in self?.overlay.update(data) }
+        live.onUpdate = { [weak self] data in self?.handleLiveUpdate(data) }
         live.onNewEvents = { [weak self] events, data in self?.handleLiveEvents(events, data: data) }
         live.onGameEnded = { [weak self] in self?.gameEnded() }
+    }
+
+    private func handleGameflowSession(_ session: GameflowSession) {
+        guard let client = lcu.client else { return }
+        var names: [Int: String] = [:]
+        for (id, champ) in gameData.champions { names[id] = champ.name }
+        scout.scout(session: session, client: client, championNames: names)
+    }
+
+    private func handleLiveUpdate(_ data: LiveAllGameData) {
+        overlay.update(data)
+        recorder.replaySeconds = settings.replaySeconds
+        recorder.recordFullGames = settings.recordGames
+        let wantsCapture = settings.recordGames || settings.autoClips
+        if wantsCapture && !recorder.isRecording && ScreenCaptureRecorder.hasPermission {
+            Task { await recorder.start(gameTime: data.gameData.gameTime) }
+        }
     }
 
     private func phaseChanged(from old: GameflowPhase, to new: GameflowPhase) {
         DebugLog.shared.add("lcu", "Phase: \(old.displayName) → \(new.displayName)")
         switch new {
         case .champSelect:
+            scout.reset()
             champSelect.lockedRoles = [:]
             if settings.autoNavigate { router.go(.champSelect) }
             Task { await champSelect.prefetchDetails() }
-        case .gameStart, .inProgress:
-            if let session = lcu.gameflowSession, let client = lcu.client {
-                var names: [Int: String] = [:]
-                for (id, champ) in gameData.champions { names[id] = champ.name }
-                scout.scout(session: session, client: client, championNames: names)
-                if settings.autoNavigate, old == .champSelect || old == .none { router.go(.loadingScreen) }
+        case .gameStart, .inProgress, .reconnect:
+            if let session = lcu.gameflowSession {
+                handleGameflowSession(session)
+            }
+            if settings.autoNavigate, old == .champSelect || old == .none {
+                router.go(.loadingScreen)
             }
         case .endOfGame, .preEndOfGame:
             if settings.autoNavigate { router.go(.postGame) }
@@ -144,10 +171,11 @@ final class AppModel {
 
     private func handleLiveEvents(_ events: [LiveEvent], data: LiveAllGameData) {
         overlay.ingest(events, data: data)
-        if events.contains(where: { $0.EventName == "GameStart" }) || (!recorder.isRecording && settings.recordGames && data.gameData.gameTime < 120) {
-            if settings.recordGames && !recorder.isRecording {
-                Task { await recorder.start(gameTime: data.gameData.gameTime) }
-            }
+        let wantsCapture = settings.recordGames || settings.autoClips
+        if wantsCapture && !recorder.isRecording && ScreenCaptureRecorder.hasPermission {
+            recorder.replaySeconds = settings.replaySeconds
+            recorder.recordFullGames = settings.recordGames
+            Task { await recorder.start(gameTime: data.gameData.gameTime) }
         }
         guard recorder.isRecording, let me = data.localPlayer else { return }
         for event in events {
@@ -213,11 +241,13 @@ final class AppModel {
     func loadPostGame(_ match: MatchRecord? = nil) async {
         let candidate = match ?? lcu.lastEndOfGame ?? matches.first
         guard var chosen = candidate else { return }
+        let localPuuid = chosen.localPuuid ?? lcu.summoner?.puuid
         if chosen.participants.count < 10, lcu.isConnected, let full = await lcu.fullGame(chosen.gameId) {
             let lp = chosen.lpChange
             chosen = full
             chosen.lpChange = lp
         }
+        if chosen.localPuuid == nil { chosen.localPuuid = localPuuid }
         postGameMatch = chosen
         if showsDemo {
             postGameTimeline = DemoData.timeline(for: chosen)
@@ -250,21 +280,35 @@ final class AppSettings {
     var autoNavigate: Bool { didSet { defaults.set(autoNavigate, forKey: "autoNavigate") } }
     var recordGames: Bool { didSet { defaults.set(recordGames, forKey: "recordGames") } }
     var autoClips: Bool { didSet { defaults.set(autoClips, forKey: "autoClips") } }
+    var replaySeconds: Double { didSet { defaults.set(replaySeconds, forKey: "replaySeconds") } }
+    var storageQuotaGB: Double { didSet { defaults.set(storageQuotaGB, forKey: "storageQuotaGB") } }
     var overlaysEnabled: Bool { didSet { defaults.set(overlaysEnabled, forKey: "overlaysEnabled") } }
     var enabledWidgets: Set<String> { didSet { defaults.set(Array(enabledWidgets), forKey: "enabledWidgets") } }
+    /// Widgets that only appear while Tab is held.
+    var tabOnlyWidgets: Set<String> { didSet { defaults.set(Array(tabOnlyWidgets), forKey: "tabOnlyWidgets") } }
+    /// Per-widget scale factor (0.6 … 1.6).
+    var widgetScales: [String: Double] { didSet { defaults.set(widgetScales, forKey: "widgetScales") } }
     var pipelineURL: String {
         didSet { defaults.set(pipelineURL, forKey: StaticDataService.baseURLDefaultsKey) }
     }
 
     init() {
         let defaults = UserDefaults.standard
-        defaults.register(defaults: ["autoNavigate": true, "recordGames": false, "autoClips": true, "overlaysEnabled": true])
+        defaults.register(defaults: [
+            "autoNavigate": true, "recordGames": false, "autoClips": true,
+            "replaySeconds": 90.0, "storageQuotaGB": 20.0, "overlaysEnabled": true,
+        ])
         forceDemo = defaults.bool(forKey: "forceDemo")
         autoNavigate = defaults.bool(forKey: "autoNavigate")
         recordGames = defaults.bool(forKey: "recordGames")
         autoClips = defaults.bool(forKey: "autoClips")
+        replaySeconds = defaults.double(forKey: "replaySeconds")
+        storageQuotaGB = defaults.double(forKey: "storageQuotaGB")
         overlaysEnabled = defaults.bool(forKey: "overlaysEnabled")
         enabledWidgets = Set(defaults.stringArray(forKey: "enabledWidgets") ?? OverlayWidget.allCases.filter(\.defaultOn).map(\.rawValue))
+        tabOnlyWidgets = Set(defaults.stringArray(forKey: "tabOnlyWidgets")
+            ?? OverlayWidget.allCases.filter { $0.defaultVisibility == .onTab }.map(\.rawValue))
+        widgetScales = (defaults.dictionary(forKey: "widgetScales") as? [String: Double]) ?? [:]
         pipelineURL = defaults.string(forKey: StaticDataService.baseURLDefaultsKey) ?? ""
     }
 
@@ -272,5 +316,29 @@ final class AppSettings {
 
     func toggle(_ widget: OverlayWidget) {
         if enabledWidgets.contains(widget.rawValue) { enabledWidgets.remove(widget.rawValue) } else { enabledWidgets.insert(widget.rawValue) }
+    }
+
+    func visibility(_ widget: OverlayWidget) -> OverlayVisibility {
+        guard isEnabled(widget) else { return .off }
+        return tabOnlyWidgets.contains(widget.rawValue) ? .onTab : .always
+    }
+
+    func setVisibility(_ visibility: OverlayVisibility, for widget: OverlayWidget) {
+        switch visibility {
+        case .off: enabledWidgets.remove(widget.rawValue)
+        case .always: enabledWidgets.insert(widget.rawValue); tabOnlyWidgets.remove(widget.rawValue)
+        case .onTab: enabledWidgets.insert(widget.rawValue); tabOnlyWidgets.insert(widget.rawValue)
+        }
+    }
+
+    func scale(_ widget: OverlayWidget) -> Double { widgetScales[widget.rawValue] ?? widget.defaultScale }
+
+    func setScale(_ scale: Double, for widget: OverlayWidget) {
+        widgetScales[widget.rawValue] = min(1.6, max(0.6, (scale * 20).rounded() / 20))
+    }
+
+    func resetOverlayLayout() {
+        tabOnlyWidgets = Set(OverlayWidget.allCases.filter { $0.defaultVisibility == .onTab }.map(\.rawValue))
+        widgetScales = [:]
     }
 }

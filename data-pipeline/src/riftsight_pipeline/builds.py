@@ -88,7 +88,8 @@ class Block:
         self.boots: dict = {}
         self.completed: dict = {}
 
-    def add(self, p: dict, tlp: dict | None, legendaries: list[int], role: str, items: dict, full: bool) -> None:
+    def add(self, p: dict, tlp: dict | None, legendaries: list[int], role: str, items: dict, full: bool,
+            inventory_core: bool = False) -> None:
         win = int(p["win"])
         self.games += 1
         self.wins += win
@@ -111,14 +112,17 @@ class Block:
             if tlp.get("starters"):
                 _inc(self.starters, tuple(sorted(set(tlp["starters"]))), win)
             ordered = [int(i) for i, _m in tlp.get("legendaries") or []]
+            core = tuple(ordered[:3])
+            if len(core) == 3:
+                _inc(self.core, core, win)
         else:
-            ordered = legendaries
-        core = tuple(ordered[:3])
-        if len(core) == 3:
-            _inc(self.core, core, win)
-        if full:
+            core = tuple(legendaries[:3])
+            if inventory_core and len(core) == 3:
+                _inc(self.core, tuple(sorted(core)), win)
+        if full and tlp:
             if len(core) >= 2:
                 _inc(self.arche[archetype(list(core), items, role)], core, win)
+        if full:
             for iid in set(legendaries):
                 _inc(self.completed, iid, win)
 
@@ -146,7 +150,7 @@ class Block:
             seqs = [(seq, c) for (m, seq), c in self.seqs.items() if m == mo]
             seq = max(seqs, key=lambda x: x[1])[0] if seqs else []
             out["skillOrder"] = {"maxOrder": list(mo), "sequence": complete_sequence(list(seq), list(mo)), "games": g, "winrate": rnd(w / g)}
-        if (not vs or self.games >= s.vs_core_min_games) and (r := _best(self.core, sum(g for g, _ in self.core.values()), 0.10)):
+        if (not vs or self.games >= s.vs_core_min_games) and (r := _best(self.core, sum(g for g, _ in self.core.values()), 0.10)) and r[1] >= 3:
             out["coreBuild"] = {"itemIds": list(r[0]), "games": r[1], "winrate": rnd(r[2] / r[1])}
         if full:
             total = sum(g for d in self.arche.values() for g, _ in d.values()) or 1

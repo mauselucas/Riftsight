@@ -18,10 +18,13 @@ public struct GoldCalculator: Sendable {
         players.reduce(0) { $0 + inventoryValue($1) }
     }
 
-    /// Direct lane opponent: same position, otherwise the enemy with the same index.
-    public func laneOpponent(of player: LivePlayer, in enemies: [LivePlayer]) -> LivePlayer? {
+    /// Direct lane opponent: same position, otherwise the enemy at the same roster index.
+    public func laneOpponent(of player: LivePlayer, in enemies: [LivePlayer], allies: [LivePlayer] = []) -> LivePlayer? {
         if let role = player.role, let match = enemies.first(where: { $0.role == role }) { return match }
-        return nil
+        if let idx = allies.firstIndex(where: { $0.id == player.id }), enemies.indices.contains(idx) {
+            return enemies[idx]
+        }
+        return enemies.first
     }
 }
 

@@ -52,8 +52,15 @@ struct ChampSelectView: View {
                 }
             }
             .animation(.snappy(duration: 0.22), value: model.showCounterDrawer)
-            .task { await model.prefetchDetails() }
+            .task(id: prefetchKey(model)) { await model.prefetchDetails() }
         }
+    }
+
+    private func prefetchKey(_ model: ChampSelectModel) -> String {
+        guard let draft = model.draft else { return "" }
+        let ids = (draft.allies + draft.enemies).map { "\($0.cellId):\($0.championId)" }
+        let locks = model.lockedRoles.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.rawValue)" }
+        return (ids + locks).joined(separator: ",")
     }
 }
 
@@ -553,6 +560,11 @@ private struct ItemsColumn: View {
                 }
 
                 header("Items", action: nil)
+                if build != nil && !app.staticData.isReliable(build) {
+                    Label("Erst \(build?.games ?? 0) Spiele in den Daten – Empfehlung noch unsicher", systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 11)).foregroundStyle(Theme.gold)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 itemRow("Start-Items", ids: build?.startingItems?.itemIds ?? [])
                 itemRow("Core-Build-Reihenfolge", ids: archetype?.itemIds ?? build?.coreBuild?.itemIds ?? [], arrows: true)
                 rateRow("Fertige Items", rates: build?.completedItems ?? [])

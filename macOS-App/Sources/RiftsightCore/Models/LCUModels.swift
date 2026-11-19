@@ -99,6 +99,51 @@ public struct ChampSelectSession: Codable, Sendable, Hashable {
         public var displayChampionId: Int { championId != 0 ? championId : (championPickIntent ?? 0) }
         public var role: Role? { assignedPosition.flatMap { Role(flexible: $0) } }
         public var hasSmite: Bool { spell1Id == 11 || spell2Id == 11 }
+
+        public init(cellId: Int, championId: Int, championPickIntent: Int? = nil, assignedPosition: String? = nil,
+                    spell1Id: Int? = nil, spell2Id: Int? = nil, puuid: String? = nil, gameName: String? = nil,
+                    tagLine: String? = nil, team: Int? = nil) {
+            self.cellId = cellId
+            self.championId = championId
+            self.championPickIntent = championPickIntent
+            self.assignedPosition = assignedPosition
+            self.spell1Id = spell1Id
+            self.spell2Id = spell2Id
+            self.puuid = puuid
+            self.gameName = gameName
+            self.tagLine = tagLine
+            self.team = team
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case cellId, championId, championPickIntent, assignedPosition, spell1Id, spell2Id, puuid, gameName, tagLine, team
+        }
+
+        /// Lenient decoder: Riot sends `UInt64.max` (18446744073709551615) for unset/hidden spell ids in some queues,
+        /// which would overflow `Int` and abort decoding the entire ChampSelectSession.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            cellId = try c.decodeIfPresent(Int.self, forKey: .cellId) ?? 0
+            championId = try c.decodeIfPresent(Int.self, forKey: .championId) ?? 0
+            championPickIntent = try? c.decodeIfPresent(Int.self, forKey: .championPickIntent)
+            assignedPosition = try? c.decodeIfPresent(String.self, forKey: .assignedPosition)
+            spell1Id = Self.decodeSpellId(from: c, forKey: .spell1Id)
+            spell2Id = Self.decodeSpellId(from: c, forKey: .spell2Id)
+            puuid = try? c.decodeIfPresent(String.self, forKey: .puuid)
+            gameName = try? c.decodeIfPresent(String.self, forKey: .gameName)
+            tagLine = try? c.decodeIfPresent(String.self, forKey: .tagLine)
+            team = try? c.decodeIfPresent(Int.self, forKey: .team)
+        }
+
+        private static func decodeSpellId(from container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> Int? {
+            if let value = try? container.decodeIfPresent(Int.self, forKey: key) {
+                return (0..<100_000).contains(value) ? value : nil
+            }
+            if let value = try? container.decodeIfPresent(UInt64.self, forKey: key), value < 100_000 {
+                return Int(value)
+            }
+            return nil
+        }
     }
 
     public struct Action: Codable, Sendable, Hashable {
@@ -128,6 +173,21 @@ public struct ChampSelectSession: Codable, Sendable, Hashable {
     public let actions: [[Action]]
     public let bans: Bans?
     public let timer: Timer?
+
+    enum CodingKeys: String, CodingKey {
+        case gameId, localPlayerCellId, myTeam, theirTeam, actions, bans, timer
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        gameId = try? c.decodeIfPresent(Int64.self, forKey: .gameId)
+        localPlayerCellId = try c.decodeIfPresent(Int.self, forKey: .localPlayerCellId) ?? 0
+        myTeam = try c.decodeIfPresent([Member].self, forKey: .myTeam) ?? []
+        theirTeam = try c.decodeIfPresent([Member].self, forKey: .theirTeam) ?? []
+        actions = (try? c.decodeIfPresent([[Action]].self, forKey: .actions)) ?? []
+        bans = try? c.decodeIfPresent(Bans.self, forKey: .bans)
+        timer = try? c.decodeIfPresent(Timer.self, forKey: .timer)
+    }
 
     public var localPlayer: Member? { myTeam.first { $0.cellId == localPlayerCellId } }
 

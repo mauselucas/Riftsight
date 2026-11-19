@@ -63,16 +63,15 @@ enum OverlayWidget: String, CaseIterable, Identifiable {
 
     var defaultOn: Bool { self != .csBenchmark && !isPolicySensitive }
 
-    enum Visibility { case always, onTab }
-    var visibility: Visibility {
+    var defaultVisibility: OverlayVisibility {
         switch self {
         case .matchupGuide, .csBenchmark: .onTab
         default: .always
         }
     }
 
-    /// Accepts clicks even outside interact mode.
-    var isInteractive: Bool { self == .cooldowns || self == .augments }
+    /// The gold bar is large by nature; start it smaller.
+    var defaultScale: Double { self == .goldBar ? 0.8 : 1.0 }
 
     var defaultSize: CGSize {
         switch self {
@@ -106,6 +105,18 @@ enum OverlayWidget: String, CaseIterable, Identifiable {
     }
 }
 
+enum OverlayVisibility: String, CaseIterable, Identifiable {
+    case always, onTab, off
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .always: "Immer"
+        case .onTab: "Nur bei Tab"
+        case .off: "Aus"
+        }
+    }
+}
+
 /// Live in-game state for the overlays, derived from the Live Client API (read-only).
 @MainActor
 @Observable
@@ -116,11 +127,13 @@ final class LiveOverlayModel {
     private(set) var cooldowns: [String: CooldownTimer] = [:]
     private(set) var detectedAugments: [DetectedAugment] = []
     private(set) var isScanningAugments = false
+    private(set) var detailsRevision = 0
     var augmentMessage: String?
     var tabHeld = false
 
     private unowned let app: AppModel
     private let isPreview: Bool
+    private var prefetchedMatchKey: String?
 
     init(app: AppModel, preview: Bool = false) {
         self.app = app
@@ -148,9 +161,18 @@ final class LiveOverlayModel {
             tracker = ObjectiveEventTracker()
             spikeDetector = ItemSpikeDetector(items: app.gameData.items)
             cooldowns = [:]
+            prefetchedMatchKey = nil
         }
         self.data = data
         _ = spikeDetector.update(players: data.enemies, gameTime: data.gameData.gameTime)
+
+        if !isPreview {
+            let key = ([data.localPlayer?.championAlias ?? ""] + data.enemies.map(\.championAlias)).joined(separator: "|")
+            if !key.isEmpty && key != prefetchedMatchKey {
+                prefetchedMatchKey = key
+                Task { await prefetchEnemyDetails() }
+            }
+        }
     }
 
     func ingest(_ events: [LiveEvent], data: LiveAllGameData) {
@@ -162,6 +184,7 @@ final class LiveOverlayModel {
         tracker = ObjectiveEventTracker()
         cooldowns = [:]
         detectedAugments = []
+        prefetchedMatchKey = nil
     }
 
     // MARK: Gold & win probability
@@ -192,7 +215,17 @@ final class LiveOverlayModel {
 
     var laneOpponent: LivePlayer? {
         guard let me, let data else { return nil }
-        return gold.laneOpponent(of: me, in: data.enemies)
+        return gold.laneOpponent(of: me, in: data.enemies, allies: data.allies)
+    }
+
+    var activeMatchupGuide: MatchupGuide? {
+        _ = detailsRevision
+        guard myChampionId > 0,
+              let opponent = laneOpponent,
+              let enemyId = app.gameData.championId(alias: opponent.championAlias) else { return nil }
+        return app.guides.guide(my: myChampionId, enemy: enemyId, role: myRole, patch: app.gameData.patch)
+            ?? app.champSelect.guide(my: myChampionId, enemy: enemyId, role: myRole)
+            ?? (app.champSelect.matchupGuide.flatMap { $0.enemyChampionId == enemyId ? $0 : nil })
     }
 
     var build: BuildBlock? {
@@ -204,10 +237,20 @@ final class LiveOverlayModel {
         return app.staticData.build(championId: myChampionId, role: myRole, vs: enemy)
     }
 
+    /// Core items in the order Champ Select showed them (selected build style first).
+    var recommendedCore: [Int] {
+        guard let build else { return [] }
+        let selected = app.champSelect.myChampionId == myChampionId ? app.champSelect.selectedArchetype : nil
+        let archetype = build.archetypes?.first { $0.name == selected } ?? build.archetypes?.first
+        return archetype?.itemIds ?? build.coreBuild?.itemIds ?? []
+    }
+
     var nextPurchase: NextPurchase? {
         guard let me, let data = data?.activePlayer else { return nil }
+        // Too few games behind this build → no recommendation rather than a random one.
+        guard isPreview || app.staticData.isReliable(build) else { return nil }
         let owned = me.itemIds
-        let targets = (build?.coreBuild?.itemIds ?? []) + (build?.completedItems?.map(\.itemId) ?? [])
+        let targets = recommendedCore + (build?.completedItems?.map(\.itemId) ?? [])
         guard let target = targets.first(where: { !owned.contains($0) }) else { return nil }
         return SituationalItemEngine.nextPurchase(target: target, owned: owned, gold: Int(data.currentGold), items: app.gameData.items)
     }
@@ -281,9 +324,19 @@ final class LiveOverlayModel {
     }
 
     func prefetchEnemyDetails() async {
+        if myChampionId > 0 {
+            _ = await app.gameData.detail(myChampionId)
+        }
         for enemy in data?.enemies ?? [] {
             if let id = app.gameData.championId(alias: enemy.championAlias) { _ = await app.gameData.detail(id) }
         }
+        if myChampionId > 0,
+           let opponent = laneOpponent,
+           let enemyId = app.gameData.championId(alias: opponent.championAlias),
+           let guide = app.champSelect.guide(my: myChampionId, enemy: enemyId, role: myRole) {
+            app.guides.store(guide)
+        }
+        detailsRevision += 1
     }
 
     // MARK: Augments

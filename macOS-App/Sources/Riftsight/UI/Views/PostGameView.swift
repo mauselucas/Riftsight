@@ -501,18 +501,19 @@ private struct AnalysisTab: View {
                     SectionHeader("Tode & Takedowns", icon: "timeline.selection")
                     GeometryReader { proxy in
                         let width = proxy.size.width
+                        let safeDuration = Double(max(1, match.durationSeconds))
                         ZStack(alignment: .leading) {
                             Capsule().fill(Theme.border).frame(height: 4)
                             ForEach(Array((timeline?.takedownTimes ?? []).enumerated()), id: \.offset) { _, time in
                                 Circle().fill(Theme.win).frame(width: 9, height: 9)
-                                    .offset(x: width * CGFloat(time / Double(match.durationSeconds)) - 4.5, y: -10)
+                                    .offset(x: width * CGFloat(min(1, max(0, time / safeDuration))) - 4.5, y: -10)
                             }
                             ForEach(Array((timeline?.deathTimes ?? []).enumerated()), id: \.offset) { _, time in
                                 Circle().fill(Theme.loss).frame(width: 9, height: 9)
-                                    .offset(x: width * CGFloat(time / Double(match.durationSeconds)) - 4.5, y: 10)
+                                    .offset(x: width * CGFloat(min(1, max(0, time / safeDuration))) - 4.5, y: 10)
                             }
                             Rectangle().fill(Theme.gold.opacity(0.6)).frame(width: 1, height: 34)
-                                .offset(x: width * CGFloat(14 * 60 / Double(match.durationSeconds)))
+                                .offset(x: width * CGFloat(min(1, Double(14 * 60) / safeDuration)))
                         }
                     }
                     .frame(height: 50)

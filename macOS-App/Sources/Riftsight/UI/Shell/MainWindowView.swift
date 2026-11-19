@@ -111,7 +111,7 @@ struct Sidebar: View {
 
                     group("IM SPIEL")
                     item(.champSelect, badge: app.lcu.phase == .champSelect ? "LIVE" : nil)
-                    item(.loadingScreen, badge: app.lcu.phase == .inProgress ? "LIVE" : nil)
+                    item(.loadingScreen, badge: app.lcu.phase.isInGame ? "LIVE" : nil)
                     item(.postGame)
                 }
                 .padding(.bottom, 12)

@@ -261,17 +261,41 @@ struct ProSpectateCard: View {
 private struct RecordingsCard: View {
     @Environment(AppModel.self) private var app
 
+    private var clips: [ClipCardModel] {
+        if !app.library.items.isEmpty {
+            return app.library.items.map { item in
+                let m = item.metadata
+                return ClipCardModel(id: item.url.path, title: m.title, championId: m.championId, skinNum: 0,
+                                     kills: m.kills, deaths: m.deaths, assists: m.assists, queue: m.queueName ?? "",
+                                     date: m.createdAt, duration: m.duration, isFullGame: m.kind == .fullGame,
+                                     favorite: m.favorite, fileURL: item.url, thumbnail: item.thumbnail, markers: m.markers)
+            }
+        }
+        return DemoData.clips.map {
+            ClipCardModel(id: $0.id, title: $0.title, championId: $0.championId, skinNum: $0.skinNum,
+                          kills: $0.kills, deaths: $0.deaths, assists: $0.assists, queue: $0.queue,
+                          date: $0.date, duration: $0.duration, isFullGame: $0.isFullGame,
+                          favorite: $0.favorite, fileURL: nil, thumbnail: nil, markers: [])
+        }
+    }
+
     var body: some View {
-        let clips = DemoData.clips
-        let full = clips.first { $0.isFullGame }
+        let allClips = clips
+        let full = allClips.first { $0.isFullGame } ?? allClips.first
         LinkCard {
             HStack(spacing: 0) {
                 ZStack(alignment: .bottomLeading) {
-                    SplashArt(championId: full?.championId ?? 103, skinNum: full?.skinNum ?? 0, style: .centered)
-                        .overlay(LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .center, endPoint: .bottom))
+                    Group {
+                        if let thumb = full?.thumbnail {
+                            RemoteImage(thumb)
+                        } else {
+                            SplashArt(championId: full?.championId ?? 103, skinNum: full?.skinNum ?? 0, style: .centered)
+                        }
+                    }
+                    .overlay(LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .center, endPoint: .bottom))
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("SIEG").font(.system(size: 10, weight: .bold)).foregroundStyle(Color(hex: 0x8FB2FF))
+                            Text(full?.isFullGame == true ? "GANZES SPIEL" : "CLIP").font(.system(size: 10, weight: .bold)).foregroundStyle(Color(hex: 0x8FB2FF))
                                 .padding(.horizontal, 6).padding(.vertical, 3).background(Theme.accent.opacity(0.25), in: .rect(cornerRadius: 4))
                             Spacer()
                             Text(formatClock(full?.duration ?? 0)).font(.system(size: 11, weight: .semibold).monospacedDigit())
@@ -281,14 +305,14 @@ private struct RecordingsCard: View {
                         HStack(spacing: 8) {
                             ChampionIcon(id: full?.championId ?? 103, size: 26, radius: 13)
                             VStack(alignment: .leading, spacing: 0) {
-                                Text("Ganzes Spiel").font(.system(size: 14, weight: .semibold))
+                                Text(full?.title ?? "Ganzes Spiel").font(.system(size: 14, weight: .semibold)).lineLimit(1)
                                 Text("\(full?.queue ?? "") · \(full?.date.relativeGerman ?? "")").font(.system(size: 10.5)).foregroundStyle(Theme.textSecondary)
                             }
                         }
-                        if let full {
+                        if let full, let k = full.kills, let d = full.deaths, let a = full.assists {
                             HStack(spacing: 6) {
-                                KDAText(kills: full.kills, deaths: full.deaths, assists: full.assists, size: 13)
-                                Text(String(format: "%.1f KDA", locale: .riftsight, Double(full.kills + full.assists) / Double(max(1, full.deaths))))
+                                KDAText(kills: k, deaths: d, assists: a, size: 13)
+                                Text(String(format: "%.1f KDA", locale: .riftsight, Double(k + a) / Double(max(1, d))))
                                     .font(.system(size: 10.5)).foregroundStyle(Color(hex: 0x9DB0FF))
                             }
                         }
@@ -298,11 +322,17 @@ private struct RecordingsCard: View {
                 .frame(width: 190)
                 .clipped()
                 VStack(alignment: .leading, spacing: 9) {
-                    ForEach(clips.filter { !$0.isFullGame }.prefix(4)) { clip in
+                    ForEach(allClips.filter { !$0.isFullGame }.prefix(4)) { clip in
                         HStack(spacing: 8) {
                             ZStack(alignment: .bottomLeading) {
-                                SplashArt(championId: clip.championId, skinNum: clip.skinNum, style: .centered)
-                                    .frame(width: 50, height: 30).clipShape(.rect(cornerRadius: 4))
+                                Group {
+                                    if let thumb = clip.thumbnail {
+                                        RemoteImage(thumb)
+                                    } else {
+                                        SplashArt(championId: clip.championId ?? 103, skinNum: clip.skinNum, style: .centered)
+                                    }
+                                }
+                                .frame(width: 50, height: 30).clipShape(.rect(cornerRadius: 4))
                                 Text(formatClock(clip.duration)).font(.system(size: 8.5, weight: .bold).monospacedDigit())
                                     .padding(.horizontal, 3).background(.black.opacity(0.7), in: .rect(cornerRadius: 2))
                             }
@@ -374,8 +404,9 @@ private struct CollectionCard: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        let owned = app.skinInventory?.owned.count ?? 212
-        let total = max(app.gameData.skins.values.filter { !$0.isBase }.count, 482)
+        let allNonBase = app.gameData.skins.values.filter { !$0.isBase }
+        let owned = app.skinInventory?.owned.count ?? (app.showsDemo ? 212 : 0)
+        let total = max(allNonBase.count, app.showsDemo ? 482 : 1)
         LinkCard {
             ZStack(alignment: .bottomLeading) {
                 SplashArt(championId: 103, skinNum: 27, style: .splash, alignment: .top)
@@ -399,7 +430,7 @@ private struct CollectionCard: View {
                 .padding(16)
             }
         }
-        .task { if app.skinInventory == nil { await app.loadCollection() } }
+        .task(id: app.lcu.isConnected) { await app.loadCollection() }
     }
 }
 

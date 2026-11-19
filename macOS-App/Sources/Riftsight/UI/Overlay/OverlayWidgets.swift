@@ -9,11 +9,55 @@ struct OverlayWidgetHost: View {
     let app: AppModel
 
     var body: some View {
-        OverlayWidgetView(widget: widget, model: model, interact: manager?.interactMode ?? false) {
-            manager?.disable(widget)
+        let scale = app.settings.scale(widget)
+        ScaledContent(scale: scale) {
+            OverlayWidgetView(widget: widget, model: model, interact: manager?.interactMode ?? false) {
+                manager?.disable(widget)
+            }
+            .fixedSize()
         }
         .environment(app)
-        .fixedSize()
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { _ in
+                    if !dragging { dragging = true; manager?.beginDrag(widget) }
+                    manager?.drag(widget)
+                }
+                .onEnded { _ in
+                    dragging = false
+                    manager?.endDrag(widget)
+                }
+        )
+    }
+
+    @ViewState private var dragging = false
+}
+
+/// Renders its content scaled while reporting the scaled size to the layout (so the panel resizes too).
+struct ScaledContent<Content: View>: View {
+    let scale: Double
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ScaleLayout(scale: scale) {
+            content.scaleEffect(scale, anchor: .topLeading)
+        }
+    }
+}
+
+private struct ScaleLayout: Layout {
+    let scale: Double
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let size = child.sizeThatFits(.unspecified)
+        return CGSize(width: size.width * scale, height: size.height * scale)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        child.place(at: bounds.origin, anchor: .topLeading, proposal: .unspecified)
     }
 }
 
@@ -217,6 +261,7 @@ struct SkillUpWidget: View {
     var onClose: (() -> Void)?
 
     var body: some View {
+        let _ = model.detailsRevision
         if let key = model.skillUp, let me = model.me {
             let championId = model.myChampionId
             let detail = app.gameData.cachedDetail(championId)
@@ -339,11 +384,7 @@ struct MatchupGuideWidget: View {
     let model: LiveOverlayModel
 
     var body: some View {
-        let guide: MatchupGuide? = {
-            guard let opponent = model.laneOpponent, let enemyId = app.gameData.championId(alias: opponent.championAlias) else { return nil }
-            return app.guides.guide(my: model.myChampionId, enemy: enemyId, role: model.myRole, patch: app.gameData.patch)
-                ?? (app.champSelect.matchupGuide.flatMap { $0.enemyChampionId == enemyId ? $0 : nil })
-        }()
+        let guide = model.activeMatchupGuide
         GlassPanel(padding: 12) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
@@ -362,7 +403,7 @@ struct MatchupGuideWidget: View {
                         }
                     }
                 } else {
-                    Text("Guide wird im Champ Select erstellt.").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.6))
+                    Text("Guide wird aus den Champion-Daten erstellt …").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.6))
                 }
             }
             .frame(width: 300, alignment: .leading)

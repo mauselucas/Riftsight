@@ -38,12 +38,13 @@ public struct MatchupGuide: Codable, Sendable, Hashable {
 
 /// JSON-file backed cache so known matchups load in 0 ms.
 @MainActor
+@Observable
 public final class MatchupGuideCache {
     private var guides: [String: MatchupGuide] = [:]
     private let file: URL
     private var dirty = false
 
-    public init(file: URL = AppPaths.directory("Guides").appendingPathComponent("matchup-guides.json")) {
+    public init(file: URL = AppPaths.directory("Guides").appendingPathComponent("matchup-guides-v2.json")) {
         self.file = file
         if let data = try? Data(contentsOf: file),
            let stored = try? JSONDecoder().decode([String: MatchupGuide].self, from: data) {
@@ -53,11 +54,14 @@ public final class MatchupGuideCache {
 
     public func guide(my: Int, enemy: Int, role: Role?, patch: String) -> MatchupGuide? {
         guides[MatchupGuide.key(my: my, enemy: enemy, role: role, patch: patch)]
+            ?? guides[MatchupGuide.key(my: my, enemy: enemy, role: nil, patch: patch)]
     }
 
     public func store(_ guide: MatchupGuide) {
+        if guides[guide.cacheKey] == guide { return }
         guides[guide.cacheKey] = guide
         dirty = true
+        flush()
     }
 
     public func flush() {

@@ -223,13 +223,18 @@ final class ChampSelectModel {
     }
 
     var threats: ThreatProfile {
+        threats(enemyIds: (draft?.enemies ?? []).map(\.championId))
+    }
+
+    /// Threat profile of an arbitrary enemy team (champ select or loading screen).
+    func threats(enemyIds: [Int]) -> ThreatProfile {
         var profile = ThreatProfile()
-        let enemies = (draft?.enemies ?? []).filter { $0.championId > 0 }
+        let enemies = enemyIds.filter { $0 > 0 }
         var magic = 0.0
-        for enemy in enemies {
-            let alias = app.gameData.alias(enemy.championId)
-            let t = traits(enemy.championId, role: nil)
-            let name = app.gameData.championName(enemy.championId)
+        for id in enemies {
+            let alias = app.gameData.alias(id)
+            let t = traits(id, role: nil)
+            let name = app.gameData.championName(id)
             if ChampionKnowledge.healers.contains(alias) { profile.healingSources.append(name) }
             if ChampionKnowledge.shielders.contains(alias) { profile.shieldSources.append(name) }
             if ChampionKnowledge.hardCC.contains(alias) { profile.hardCC += 1 }
@@ -242,7 +247,11 @@ final class ChampSelectModel {
 
     var itemGroups: [ItemGroup] {
         guard myChampionId > 0 else { return [] }
-        let t = traits(myChampionId, role: myRole)
+        return itemGroups(championId: myChampionId, role: myRole, build: build, threats: threats)
+    }
+
+    func itemGroups(championId: Int, role: Role, build: BuildBlock?, threats: ThreatProfile) -> [ItemGroup] {
+        let t = traits(championId, role: role)
         let profile: SituationalItemEngine.DamageProfile = t.isTank ? .tank : (t.magicWeight > 0.5 ? .magic : .physical)
         return SituationalItemEngine.groups(profile: profile, build: build, threats: threats, items: app.gameData.items)
     }
