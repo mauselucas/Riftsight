@@ -119,6 +119,7 @@ final class OverlayWindowManager {
             if visible {
                 let panel = panel(for: widget, model: model)
                 panel.ignoresMouseEvents = false
+                fitToContent(panel)
                 if !panel.isVisible || reassert { panel.orderFrontRegardless() }
             } else if let panel = panels[widget], panel.isVisible {
                 panel.orderOut(nil)
@@ -171,6 +172,18 @@ final class OverlayWindowManager {
         case .matchupGuide: model.laneOpponent != nil
         default: true
         }
+    }
+
+    /// Grows/shrinks the panel to the widget's real size (values, scale) while keeping its top-left corner fixed,
+    /// so content is never clipped or wrapped.
+    private func fitToContent(_ panel: OverlayPanel) {
+        guard let host = panel.contentView else { return }
+        let fitting = host.fittingSize
+        let current = panel.frame
+        guard fitting.width > 1, fitting.height > 1,
+              abs(fitting.width - current.width) > 0.5 || abs(fitting.height - current.height) > 0.5 else { return }
+        panel.setFrame(CGRect(x: current.minX, y: current.maxY - fitting.height, width: fitting.width, height: fitting.height),
+                       display: true)
     }
 
     private func panel(for widget: OverlayWidget, model: LiveOverlayModel) -> OverlayPanel {

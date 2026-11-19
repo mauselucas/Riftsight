@@ -153,6 +153,8 @@ struct GoldBarWidget: View {
                 Text(compact(enemy)).foregroundStyle(Color(hex: 0xFF8A8A))
             }
             .font(.system(size: 22, weight: .heavy).monospacedDigit())
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, 14)
             .padding(.vertical, 4)
             .background(Color(hex: 0x0E1220, alpha: 0.92), in: .rect(cornerRadius: 4))
@@ -171,7 +173,9 @@ struct GoldBarWidget: View {
                     .help(timer.detail ?? timer.kind.displayName)
                 }
             }
+            .fixedSize()
         }
+        .fixedSize()
     }
 
     private func compact(_ value: Int) -> String { String(format: "%.1fK", locale: .riftsight, Double(value) / 1000) }

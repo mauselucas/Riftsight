@@ -115,3 +115,19 @@ def test_sample_data_contract() -> None:
     sample_dir = Path(__file__).resolve().parents[2] / "macOS-App" / "Resources" / "SampleData"
     files = {p.stem: json.loads(p.read_text()) for p in sample_dir.glob("*.json")}
     assert validate(files, Settings().sampled()) == []
+
+
+def test_focus_seeds_and_settings(monkeypatch) -> None:
+    from riftsight_pipeline.config import load_settings
+    store = Store(":memory:")
+    store.add_seed("a", "EUW1", "EMERALD")
+    store.add_seed("b", "EUW1", "DIAMOND", priority=1)
+    store.add_seed("a", "EUW1", "EMERALD", priority=1)
+    assert sorted(p for p, _ in store.next_focus_seeds("EUW1", 10)) == ["a", "b"]
+    store.mark_crawled("b")
+    assert [p for p, _ in store.next_focus_seeds("EUW1", 10)] == ["a"]
+    monkeypatch.setenv("SAMPLE_MODE", "1")
+    monkeypatch.setenv("RIFTSIGHT_FOCUS_CHAMPIONS", "901, 29")
+    monkeypatch.setenv("MATCHES_PER_PLATFORM", "2000")
+    s = load_settings()
+    assert s.focus_champions == (901, 29) and s.matches_per_platform == 2000

@@ -74,6 +74,11 @@ class Settings:
     min_champions_published: int = 150
     leaderboard_size: int = 100
 
+    # Focus mode: champions whose games get extra crawl budget and always a timeline (builds need timelines).
+    # Players seen on a focus champion become priority seeds, so one-tricks are revisited every run.
+    focus_champions: tuple[int, ...] = ()
+    focus_share: float = 0.6
+
     state_dir: Path = field(default_factory=lambda: ROOT / "state")
     out_dir: Path = field(default_factory=lambda: ROOT / "out")
     dist_dir: Path = field(default_factory=lambda: ROOT / "dist")
@@ -117,6 +122,10 @@ def load_settings() -> Settings:
         settings = replace(settings, out_dir=Path(raw))
     if os.environ.get("SAMPLE_MODE", "").lower() in {"1", "true", "yes"}:
         settings = settings.sampled()
+    if raw := os.environ.get("RIFTSIGHT_FOCUS_CHAMPIONS"):
+        settings = replace(settings, focus_champions=tuple(int(x) for x in raw.replace(" ", "").split(",") if x.isdigit()))
+    if raw := os.environ.get("MATCHES_PER_PLATFORM"):
+        settings = replace(settings, matches_per_platform=int(raw))
     if raw := os.environ.get("COLLECT_MAX_MINUTES"):
         settings = replace(settings, max_minutes=float(raw))
     return settings

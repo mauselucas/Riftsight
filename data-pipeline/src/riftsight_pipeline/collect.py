@@ -44,6 +44,7 @@ async def seed_platform(client: RiotClient, store: Store, platform: str, s: Sett
 async def crawl_platform(client: RiotClient, store: Store, static: StaticData, platform: str, s: Settings, deadline: float) -> int:
     start_time = int(time.time()) - 14 * 86400
     new = 0
+    focus = set(s.focus_champions)
 
     async def fetch(match_id: str, bucket: str) -> None:
         nonlocal new
@@ -54,13 +55,15 @@ async def crawl_platform(client: RiotClient, store: Store, static: StaticData, p
             return
         store.put_match(record)
         new += 1
-        if record["mode"] == "ranked" and record["duration"] >= 900 and zlib.crc32(match_id.encode()) % 1000 < s.timeline_ratio * 1000:
+        has_focus = any(p["champ"] in focus for p in record["p"])
+        sampled = zlib.crc32(match_id.encode()) % 1000 < s.timeline_ratio * 1000
+        if record["mode"] == "ranked" and record["duration"] >= 900 and (has_focus or sampled):
             if tl := await client.timeline(platform, match_id):
                 store.put_timeline(match_id, timeline_features(tl, static.items))
         if record["mode"] == "ranked":
             for p in record["p"]:
                 if p["puuid"]:
-                    store.add_seed(p["puuid"], platform, bucket)
+                    store.add_seed(p["puuid"], platform, bucket, priority=int(p["champ"] in focus))
 
     async def crawl_seed(puuid: str, bucket: str, queue: int, count: int) -> None:
         ids = await client.match_ids(platform, puuid, queue=queue, start_time=start_time, count=count)
@@ -71,8 +74,19 @@ async def crawl_platform(client: RiotClient, store: Store, static: StaticData, p
                 await fetch(match_id, bucket)
         store.mark_crawled(puuid)
 
+    if focus:
+        target = int(s.matches_per_platform * s.focus_share)
+        while new < target and time.monotonic() < deadline:
+            seeds = store.next_focus_seeds(platform, 8)
+            if not seeds:
+                break
+            await asyncio.gather(*(crawl_seed(p, b, QUEUE_RANKED_SOLO, 20) for p, b in seeds))
+            store.commit()
+        log.info("%s: %d Fokus-Matches", platform, new)
+
+    rest = max(0, s.matches_per_platform - new)
     for bucket, share in BUCKET_QUOTAS.items():
-        target = new + int(s.matches_per_platform * share)
+        target = new + int(rest * share)
         while new < target and time.monotonic() < deadline:
             seeds = store.next_seeds(platform, bucket, 8)
             if not seeds:

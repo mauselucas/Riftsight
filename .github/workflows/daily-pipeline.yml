@@ -29,12 +29,18 @@ jobs:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
           SAMPLE_MODE: ${{ vars.SAMPLE_MODE || '0' }}
           RIFTSIGHT_PLATFORMS: ${{ vars.RIFTSIGHT_PLATFORMS || 'EUW1,KR,NA1' }}
+          RIFTSIGHT_FOCUS_CHAMPIONS: ${{ vars.RIFTSIGHT_FOCUS_CHAMPIONS || '' }}
+          COLLECT_MAX_MINUTES: ${{ vars.COLLECT_MAX_MINUTES || '' }}
+          MATCHES_PER_PLATFORM: ${{ vars.MATCHES_PER_PLATFORM || '' }}
         run: uv run riftsight run
       - name: Pro-Accounts synchronisieren (Leaguepedia -> Account-V1)
         continue-on-error: true
         env:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
           RIFTSIGHT_PLATFORMS: ${{ vars.RIFTSIGHT_PLATFORMS || 'EUW1,KR,NA1' }}
+          RIFTSIGHT_FOCUS_CHAMPIONS: ${{ vars.RIFTSIGHT_FOCUS_CHAMPIONS || '' }}
+          COLLECT_MAX_MINUTES: ${{ vars.COLLECT_MAX_MINUTES || '' }}
+          MATCHES_PER_PLATFORM: ${{ vars.MATCHES_PER_PLATFORM || '' }}
         run: uv run python -m riftsight_pipeline.pro_accounts
       - name: Upload nach Cloudflare R2 (optional)
         env:

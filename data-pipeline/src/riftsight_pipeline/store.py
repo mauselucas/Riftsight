@@ -56,6 +56,9 @@ class Store:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path))
         self.db.executescript(SCHEMA)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(seeds)")}
+        if "priority" not in columns:
+            self.db.execute("ALTER TABLE seeds ADD COLUMN priority INTEGER DEFAULT 0")
 
     def close(self) -> None:
         self.db.commit()
@@ -111,8 +114,20 @@ class Store:
 
     # Seeds -------------------------------------------------------------------------------
 
-    def add_seed(self, puuid: str, platform: str, bucket: str) -> None:
+    def add_seed(self, puuid: str, platform: str, bucket: str, priority: int = 0) -> None:
         self.db.execute("INSERT OR IGNORE INTO seeds (puuid, platform, bucket) VALUES (?, ?, ?)", (puuid, platform, bucket))
+        if priority:
+            self.db.execute("UPDATE seeds SET priority = MAX(COALESCE(priority, 0), ?) WHERE puuid = ?", (priority, puuid))
+
+    def next_focus_seeds(self, platform: str, limit: int, older_than_s: int = 6 * 3600) -> list[tuple[str, str]]:
+        """Priority seeds (players seen on a focus champion), least recently crawled first."""
+        cutoff = int(time.time()) - older_than_s
+        rows = self.db.execute(
+            "SELECT puuid, bucket FROM seeds WHERE platform = ? AND priority > 0 AND crawled_at < ? "
+            "ORDER BY priority DESC, crawled_at, RANDOM() LIMIT ?",
+            (platform, cutoff, limit),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     def next_seeds(self, platform: str, bucket: str, limit: int, older_than_s: int = 6 * 3600) -> list[str]:
         cutoff = int(time.time()) - older_than_s
